@@ -1,3 +1,7 @@
+import mindspore
+import numpy as np
+import mindspore.ops as ops
+from mindspore import Tensor
 from matplotlib import pyplot as plt
 from IPython import display
 
@@ -46,3 +50,10 @@ def plot(X, Y=None, xlabel=None, ylabel=None, legend=[], xlim=None,
     for x, y, fmt in zip(X, Y, fmts):
         axes.plot(x,y,fmt) if len(x) else axes.plot(y,fmt)
     set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend)
+
+def synthetic_data(w, b, num_examples):  
+    """生成 y = Xw + b + 噪声。"""
+    X = np.random.normal(0, 1, (num_examples, len(w)))
+    y = np.matmul(X, w) + b
+    y += np.random.normal(0, 0.01, y.shape)
+    return X.astype(np.float32), y.reshape((-1, 1)).astype(np.float32)

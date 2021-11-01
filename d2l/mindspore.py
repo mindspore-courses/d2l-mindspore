@@ -6,17 +6,145 @@ import mindspore.ops as ops
 from mindspore import Tensor
 from matplotlib import pyplot as plt
 from IPython import display
-import mindspore.dataset.vision.c_transforms as cv
+import mindspore.dataset.vision.c_transforms as CV
+import mindspore.dataset.transforms.c_transforms as C
 import mindspore.dataset as ds
+
+class Accumulator:  
+    """在`n`个变量上累加。"""
+    def __init__(self, n):
+        self.data = [0.0] * n
+
+    def add(self, *args):
+        self.data = [a + float(b) for a, b in zip(self.data, args)]
+
+    def reset(self):
+        self.data = [0.0] * len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+    
+class Animator:  
+    """在动画中绘制数据。"""
+    def __init__(self, xlabel=None, ylabel=None, legend=None, xlim=None,
+                 ylim=None, xscale='linear', yscale='linear',
+                 fmts=('-', 'm--', 'g-.', 'r:'), nrows=1, ncols=1,
+                 figsize=(3.5, 2.5)):
+        if legend is None:
+            legend = []
+        use_svg_display()
+        self.fig, self.axes = plt.subplots(nrows, ncols, figsize=figsize)
+        if nrows * ncols == 1:
+            self.axes = [self.axes, ]
+        self.config_axes = lambda: set_axes(
+            self.axes[0], xlabel, ylabel, xlim, ylim, xscale, yscale, legend)
+        self.X, self.Y, self.fmts = None, None, fmts
+
+    def add(self, x, y):
+        if not hasattr(y, "__len__"):
+            y = [y]
+        n = len(y)
+        if not hasattr(x, "__len__"):
+            x = [x] * n
+        if not self.X:
+            self.X = [[] for _ in range(n)]
+        if not self.Y:
+            self.Y = [[] for _ in range(n)]
+        for i, (a, b) in enumerate(zip(x, y)):
+            if a is not None and b is not None:
+                self.X[i].append(a)
+                self.Y[i].append(b)
+        self.axes[0].cla()
+        for x, y, fmt in zip(self.X, self.Y, self.fmts):
+            self.axes[0].plot(x, y, fmt)
+        self.config_axes()
+        display.display(self.fig)
+        display.clear_output(wait=True)
+
+class FashionMnist():
+    def __init__(self, path, kind):
+        self.data, self.label = load_mnist(path, kind)
+    
+    def __getitem__(self, index):
+        return self.data[index], self.label[index]
+    
+    def __len__(self):
+        return len(self.data)
+
+class SGD(nn.Cell):
+    def __init__(self, lr, batch_size, parameters):
+        super().__init__()
+        self.lr = lr
+        self.batch_size = batch_size
+        self.parameters = parameters
+        
+    def construct(self, grads):
+        for idx in range(len(self.parameters)):
+            ops.assign(self.parameters[idx], self.parameters[idx] - self.lr * grads[idx] / self.batch_size)
+        return True
+    
+class Train(nn.Cell):
+    def __init__(self, network, optimizer):
+        super().__init__()
+        self.network = network
+        self.optimizer = optimizer
+        self.grad = ops.GradOperation(get_by_list=True)
+        
+    def construct(self, x, y):
+        loss = self.network(x, y)
+        grads = self.grad(self.network, self.optimizer.parameters)(x, y)
+        loss = ops.depend(loss, self.optimizer(grads))
+        return loss
+
+class NetWithLoss(nn.Cell):
+    def __init__(self, network, loss):
+        super().__init__()
+        self.network = network
+        self.loss = loss
+        
+    def construct(self, x, y):
+        y_hat = self.network(x)
+        loss = self.loss(y_hat, y)
+        return loss
+
+def load_mnist(path, kind='train'):
+    import os
+    import gzip
+    import numpy as np
+
+    """Load MNIST data from `path`"""
+    labels_path = os.path.join(path,
+                               '%s-labels-idx1-ubyte.gz'
+                               % kind)
+    images_path = os.path.join(path,
+                               '%s-images-idx3-ubyte.gz'
+                               % kind)
+
+    with gzip.open(labels_path, 'rb') as lbpath:
+        labels = np.frombuffer(lbpath.read(), dtype=np.uint8,
+                               offset=8)
+
+    with gzip.open(images_path, 'rb') as imgpath:
+        images = np.frombuffer(imgpath.read(), dtype=np.uint8,
+                               offset=16).reshape(len(labels), 28, 28, 1)
+
+    return images, labels
 
 def load_data_fashion_mnist(data_path, batch_size, resize=None, works=1):  
     """将Fashion-MNIST数据集加载到内存中。"""
-    mnist_train = ds.MnistDataset(data_path, usage='train')
-    mnist_test = ds.MnistDataset(data_path, usage='test')
+    mnist_train = FashionMnist(data_path, kind='train')
+    mnist_test = FashionMnist(data_path, kind='t10k')
+
+    mnist_train = ds.GeneratorDataset(source=mnist_train, column_names=['image', 'label'], shuffle=False)
+    mnist_test = ds.GeneratorDataset(source=mnist_test, column_names=['image', 'label'], shuffle=False)
+    trans = [CV.Rescale(1.0 / 255.0, 0), CV.HWC2CHW()]
+    type_cast_op = C.TypeCast(mindspore.int32)
     if resize:
-        trans = [cv.Resize(resize)]
-        mnist_train = mnist_train.map(trans, input_columns=["image"])
-        mnist_test = mnist_test.map(trans, input_columns=["image"])
+        trans.insert(0, CV.Resize(resize))
+    mnist_train = mnist_train.map(trans, input_columns=["image"])
+    mnist_test = mnist_test.map(trans, input_columns=["image"])
+    mnist_train = mnist_train.map(type_cast_op, input_columns=['label'])
+    mnist_test = mnist_test.map(type_cast_op, input_columns=['label'])
     mnist_train = mnist_train.batch(batch_size, num_parallel_workers=works)
     mnist_test = mnist_test.batch(batch_size, num_parallel_workers=works)
     return mnist_train, mnist_test
@@ -127,38 +255,38 @@ class Timer:
         """返回累计时间。"""
         return np.array(self.times).cumsum().tolist()
 
-class SGD(nn.Cell):
-    def __init__(self, lr, batch_size, params):
-        super().__init__()
-        self.lr = lr
-        self.batch_size = batch_size
-        self.params = params
-        
-    def construct(self, grads):
-        for idx in range(len(self.params)):
-            ops.assign(self.params[idx], self.params[idx] - self.lr * grads[idx] / self.batch_size)
-        return True
-    
-class Train(nn.Cell):
-    def __init__(self, network, optimizer):
-        super().__init__()
-        self.network = network
-        self.optimizer = optimizer
-        self.grad = ops.GradOperation(get_by_list=True)
-        
-    def construct(self, x, y):
-        loss = self.network(x, y)
-        grads = self.grad(self.network, self.optimizer.params)(x, y)
-        loss = ops.depend(loss, self.optimizer(grads))
-        return loss
+def accuracy(y_hat, y):  
+    """计算预测正确的数量。"""
+    if len(y_hat.shape) > 1 and y_hat.shape[1] > 1:
+        y_hat = y_hat.argmax(axis=1)
+    cmp = y_hat.asnumpy() == y.asnumpy()
+    return float(cmp.sum())
 
-class NetWithLoss(nn.Cell):
-    def __init__(self, network, loss):
-        super().__init__()
-        self.network = network
-        self.loss = loss
-        
-    def construct(self, x, y):
-        y_hat = self.network(x)
-        loss = self.loss(y_hat, y)
-        return loss
+def evaluate_accuracy(net, data_iter):  
+    """计算在指定数据集上模型的精度。"""
+    metric = Accumulator(2)
+    for X, y in data_iter:
+        metric.add(accuracy(net(X), y), y.size)
+    return metric[0] / metric[1]
+
+def train_epoch_ch3(net, train_iter, loss, optim):  
+    """训练模型一个迭代周期（定义见第3章）。"""
+    net_with_loss = nn.WithLossCell(net, loss)
+    net_train = nn.TrainOneStepCell(net_with_loss, optim)
+    metric = Accumulator(3)
+    for X, y in train_iter:
+        l = net_train(X, y)
+        y_hat = net(X)
+        metric.add(float(l.sum().asnumpy()), accuracy(y_hat, y), y.size)
+    return metric[0] / metric[2], metric[1] / metric[2]
+
+def train_ch3(net, train_iter, test_iter, loss, num_epochs, optim):  
+    """训练模型（定义见第3章）。"""
+    animator = Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 0.9],
+                        legend=['train loss', 'train acc', 'test acc'])
+    for epoch in range(num_epochs):
+        train_metrics = train_epoch_ch3(net, train_iter, loss, optim)
+        print(train_metrics)
+        test_acc = evaluate_accuracy(net, test_iter)
+        animator.add(epoch + 1, train_metrics + (test_acc,))
+    train_loss, train_acc = train_metrics

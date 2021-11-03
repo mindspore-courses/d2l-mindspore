@@ -262,31 +262,43 @@ def accuracy(y_hat, y):
     cmp = y_hat.asnumpy() == y.asnumpy()
     return float(cmp.sum())
 
-def evaluate_accuracy(net, data_iter):  
+def evaluate_accuracy(net, dataset):  
     """计算在指定数据集上模型的精度。"""
     metric = Accumulator(2)
-    for X, y in data_iter:
+    for X, y in dataset.create_tuple_iterator():
         metric.add(accuracy(net(X), y), y.size)
     return metric[0] / metric[1]
 
-def train_epoch_ch3(net, train_iter, loss, optim):  
+def train_epoch_ch3(net, dataset, loss, optim):  
     """训练模型一个迭代周期（定义见第3章）。"""
     net_with_loss = nn.WithLossCell(net, loss)
     net_train = nn.TrainOneStepCell(net_with_loss, optim)
     metric = Accumulator(3)
-    for X, y in train_iter:
+    batch_size = dataset.get_batch_size()
+
+    for X, y in dataset.create_tuple_iterator():
         l = net_train(X, y)
         y_hat = net(X)
-        metric.add(float(l.sum().asnumpy()), accuracy(y_hat, y), y.size)
-    return metric[0] / metric[2], metric[1] / metric[2]
+        metric.add(float(l.asnumpy()), accuracy(y_hat, y), y.size)
+    return metric[0] / metric[2] * batch_size, metric[1] / metric[2]
 
-def train_ch3(net, train_iter, test_iter, loss, num_epochs, optim):  
+def train_ch3(net, train_dataset, test_dataset, loss, num_epochs, optim):  
     """训练模型（定义见第3章）。"""
     animator = Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 0.9],
                         legend=['train loss', 'train acc', 'test acc'])
     for epoch in range(num_epochs):
-        train_metrics = train_epoch_ch3(net, train_iter, loss, optim)
+        train_metrics = train_epoch_ch3(net, train_dataset, loss, optim)
         print(train_metrics)
-        test_acc = evaluate_accuracy(net, test_iter)
+        test_acc = evaluate_accuracy(net, test_dataset)
         animator.add(epoch + 1, train_metrics + (test_acc,))
     train_loss, train_acc = train_metrics
+
+def predict_ch3(net, dataset, n=6):  
+    """预测标签（定义见第3章）。"""
+    for X, y in dataset.create_tuple_iterator():
+        break
+    trues = get_fashion_mnist_labels(y.asnumpy())
+    preds = get_fashion_mnist_labels(net(X).argmax(axis=1).asnumpy())
+    titles = [true +'\n' + pred for true, pred in zip(trues, preds)]
+    show_images(
+        X[0:n].reshape((n, 28, 28)), 1, n, titles=titles[0:n])

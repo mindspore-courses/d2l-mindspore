@@ -10,6 +10,34 @@ import mindspore.dataset.vision.c_transforms as CV
 import mindspore.dataset.transforms.c_transforms as C
 import mindspore.dataset as ds
 
+class Timer:
+    """记录多次运行时间。"""
+    def __init__(self):
+        """Defined in :numref:`subsec_linear_model`"""
+        self.times = []
+        self.start()
+
+    def start(self):
+        """启动计时器。"""
+        self.tik = time.time()
+
+    def stop(self):
+        """停止计时器并将时间记录在列表中。"""
+        self.times.append(time.time() - self.tik)
+        return self.times[-1]
+
+    def avg(self):
+        """返回平均时间。"""
+        return sum(self.times) / len(self.times)
+
+    def sum(self):
+        """返回时间总和。"""
+        return sum(self.times)
+
+    def cumsum(self):
+        """返回累计时间。"""
+        return np.array(self.times).cumsum().tolist()
+
 class Accumulator:  
     """在`n`个变量上累加。"""
     def __init__(self, n):
@@ -71,6 +99,16 @@ class FashionMnist():
     def __len__(self):
         return len(self.data)
 
+class ArrayData():
+    def __init__(self, data, label):
+        self.data, self.label = data, label
+    
+    def __getitem__(self, index):
+        return self.data[index], self.label[index]
+    
+    def __len__(self):
+        return len(self.data)
+
 class SGD(nn.Cell):
     def __init__(self, lr, batch_size, parameters):
         super().__init__()
@@ -106,6 +144,13 @@ class NetWithLoss(nn.Cell):
         y_hat = self.network(x)
         loss = self.loss(y_hat, y)
         return loss
+
+def linreg(x, w, b):
+    return ops.matmul(x, w) + b
+
+def squared_loss(y_hat, y):  
+    """均方损失。"""
+    return (y_hat - y.reshape(y_hat.shape)) ** 2 / 2
 
 def load_mnist(path, kind='train'):
     import os
@@ -155,6 +200,14 @@ def get_fashion_mnist_labels(labels):
     text_labels = ['t-shirt', 'trouser', 'pullover', 'dress', 'coat',
                    'sandal', 'shirt', 'sneaker', 'bag', 'ankle boot']
     return [text_labels[int(i)] for i in labels]
+
+def load_array(data_arrays, batch_size, is_train=True):
+    """Construct a PyTorch data iterator.
+    Defined in :numref:`sec_utils`"""
+    dataset = ArrayData(data_arrays[0].astype(np.float32), data_arrays[1].astype(np.float32))
+    dataset = ds.GeneratorDataset(source=dataset, column_names=['data', 'label'], shuffle=is_train)
+    dataset = dataset.batch(batch_size)
+    return dataset
 
 def show_images(imgs, num_rows, num_cols, titles=None, scale=1.5):
     """Plot a list of images.
@@ -227,34 +280,6 @@ def synthetic_data(w, b, num_examples):
     y += np.random.normal(0, 0.01, y.shape)
     return X.astype(np.float32), y.reshape((-1, 1)).astype(np.float32)
 
-class Timer:
-    """记录多次运行时间。"""
-    def __init__(self):
-        """Defined in :numref:`subsec_linear_model`"""
-        self.times = []
-        self.start()
-
-    def start(self):
-        """启动计时器。"""
-        self.tik = time.time()
-
-    def stop(self):
-        """停止计时器并将时间记录在列表中。"""
-        self.times.append(time.time() - self.tik)
-        return self.times[-1]
-
-    def avg(self):
-        """返回平均时间。"""
-        return sum(self.times) / len(self.times)
-
-    def sum(self):
-        """返回时间总和。"""
-        return sum(self.times)
-
-    def cumsum(self):
-        """返回累计时间。"""
-        return np.array(self.times).cumsum().tolist()
-
 def accuracy(y_hat, y):  
     """计算预测正确的数量。"""
     if len(y_hat.shape) > 1 and y_hat.shape[1] > 1:
@@ -302,3 +327,13 @@ def predict_ch3(net, dataset, n=6):
     titles = [true +'\n' + pred for true, pred in zip(trues, preds)]
     show_images(
         X[0:n].reshape((n, 28, 28)), 1, n, titles=titles[0:n])
+    
+def evaluate_loss(net, dataset):
+    """Evaluate the loss of a model on the given dataset.
+    Defined in :numref:`sec_utils`"""
+    net.set_train(False)
+    metric = Accumulator(2)  # Sum of losses, no. of examples
+    for X, y in dataset.create_tuple_iterator():
+        l = net(X, y)
+        metric.add(l.sum().asnumpy(), l.size)
+    return metric[0] / metric[1]

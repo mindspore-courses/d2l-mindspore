@@ -1,6 +1,7 @@
 import time
 import mindspore
 import numpy as np
+import mindspore.numpy as mnp
 import mindspore.nn as nn
 import mindspore.ops as ops
 from mindspore import Tensor
@@ -337,3 +338,12 @@ def evaluate_loss(net, dataset):
         l = net(X, y)
         metric.add(l.sum().asnumpy(), l.size)
     return metric[0] / metric[1]
+
+def corr2d(X, K):  
+    """计算二维互相关运算。"""
+    h, w = K.shape
+    Y = mnp.zeros((X.shape[0] - h + 1, X.shape[1] - w + 1))
+    for i in range(Y.shape[0]):
+        for j in range(Y.shape[1]):
+            Y[i, j] = (X[i:i + h, j:j + w] * K).sum()
+    return Y

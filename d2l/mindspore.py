@@ -168,7 +168,38 @@ class AdaptiveAvgPool2d(nn.Cell):
         inp_shape = x.shape
         kernel_size = compute_kernel_size(inp_shape, self.output_size)
         return ops.AvgPool(kernel_size, kernel_size)(x)
+
+class AdaptiveMaxPool2d(nn.Cell):
+    def __init__(self, output_size=None):
+        super().__init__()
+        self.output_size = output_size
     
+    def construct(self, x):
+        inp_shape = x.shape
+        kernel_size = compute_kernel_size(inp_shape, self.output_size)
+        return ops.MaxPool(kernel_size, kernel_size)(x)
+    
+class MaxPool2d(nn.Cell):
+    def __init__(self, kernel_size, stride=None, padding=0):
+        super().__init__()
+        if stride is None:
+            stride = kernel_size
+        self.max_pool = ops.MaxPool(kernel_size, stride)
+        self.use_pad = padding != 0
+        if isinstance(padding, tuple):
+            assert len(padding) == 2
+            paddings = ((0, 0), (0, 0), (padding[0], padding[0]), (padding[1], padding[1]))
+        elif isinstance(padding, int):
+            paddings = ((0, 0),) * 2 + ((padding, padding),) * 2
+        else:
+            raise ValueError('padding should be a tuple include 2 numbers or a int number')
+        self.pad = ops.Pad(paddings)
+    
+    def construct(self, x):
+        if self.use_pad:
+            x = self.pad(x)
+        return self.max_pool(x)
+
 def linreg(x, w, b):
     return ops.matmul(x, w) + b
 

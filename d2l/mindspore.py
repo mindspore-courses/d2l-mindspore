@@ -1,9 +1,11 @@
+import math
 import time
 import mindspore
 import numpy as np
 import mindspore.numpy as mnp
 import mindspore.nn as nn
 import mindspore.ops as ops
+from mindspore.ops import constexpr
 from mindspore import Tensor
 from matplotlib import pyplot as plt
 from IPython import display
@@ -146,6 +148,27 @@ class NetWithLoss(nn.Cell):
         loss = self.loss(y_hat, y)
         return loss
 
+@constexpr
+def compute_kernel_size(inp_shape, output_size):
+    kernel_width, kernel_height = inp_shape[2], inp_shape[3]
+    if isinstance(output_size, int):
+        kernel_width = math.ceil(kernel_width / output_size) 
+        kernel_height = math.ceil(kernel_height / output_size)
+    elif isinstance(output_size, list) or isinstance(output_size, tuple):
+        kernel_width = math.ceil(kernel_width / output_size[0]) 
+        kernel_height = math.ceil(kernel_height / output_size[1])
+    return (kernel_width, kernel_height)
+
+class AdaptiveAvgPool2d(nn.Cell):
+    def __init__(self, output_size=None):
+        super().__init__()
+        self.output_size = output_size
+    
+    def construct(self, x):
+        inp_shape = x.shape
+        kernel_size = compute_kernel_size(inp_shape, self.output_size)
+        return ops.AvgPool(kernel_size, kernel_size)(x)
+    
 def linreg(x, w, b):
     return ops.matmul(x, w) + b
 

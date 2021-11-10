@@ -347,3 +347,40 @@ def corr2d(X, K):
         for j in range(Y.shape[1]):
             Y[i, j] = (X[i:i + h, j:j + w] * K).sum()
     return Y
+
+def evaluate_accuracy_gpu(net, dataset, device=None): 
+    """使用GPU计算模型在数据集上的精度。"""
+    net.set_train(False)
+    metric = Accumulator(2)
+    for X, y in dataset.create_tuple_iterator():
+        metric.add(accuracy(net(X), y), y.size)
+    return metric[0] / metric[1]
+
+def train_ch6(net, train_dataset, test_dataset, num_epochs, lr):
+    """用GPU训练模型(在第六章定义)。"""
+    optim = nn.SGD(net.trainable_params(), learning_rate=lr)
+    loss = nn.SoftmaxCrossEntropyWithLogits(sparse=True, reduction='mean')
+    net_with_loss = nn.WithLossCell(net, loss)
+    train = nn.TrainOneStepCell(net_with_loss, optim)
+    animator = Animator(xlabel='epoch', xlim=[1, num_epochs],
+                            legend=['train loss', 'train acc', 'test acc'])
+    timer, num_batches = Timer(), train_dataset.get_dataset_size()
+    for epoch in range(num_epochs):
+        metric = Accumulator(3)
+        net.set_train()
+        for i, (X, y) in enumerate(train_dataset.create_tuple_iterator()):
+            timer.start()
+            l = train(X, y)
+            y_hat = net(X)
+            metric.add(l.asnumpy() * X.shape[0], accuracy(y_hat, y), X.shape[0])
+            timer.stop()
+            train_l = metric[0] / metric[2]
+            train_acc = metric[1] / metric[2]
+            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
+                animator.add(epoch + (i + 1) / num_batches,
+                             (train_l, train_acc, None))
+        test_acc = evaluate_accuracy_gpu(net, test_dataset)
+        animator.add(epoch + 1, (None, None, test_acc))
+    print(f'loss {train_l:.3f}, train acc {train_acc:.3f}, '
+          f'test acc {test_acc:.3f}')
+    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec')

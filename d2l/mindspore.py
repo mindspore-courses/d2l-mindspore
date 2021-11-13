@@ -2,6 +2,7 @@ import os
 import re
 import math
 import time
+import random
 import requests
 import hashlib
 import collections
@@ -136,9 +137,9 @@ class Train(nn.Cell):
         self.optimizer = optimizer
         self.grad = ops.GradOperation(get_by_list=True)
         
-    def construct(self, x, y):
-        loss = self.network(x, y)
-        grads = self.grad(self.network, self.optimizer.parameters)(x, y)
+    def construct(self, *inputs):
+        loss = self.network(*inputs)
+        grads = self.grad(self.network, self.optimizer.parameters)(*inputs)
         loss = ops.depend(loss, self.optimizer(grads))
         return loss
 
@@ -148,11 +149,38 @@ class NetWithLoss(nn.Cell):
         self.network = network
         self.loss = loss
         
-    def construct(self, x, y):
-        y_hat = self.network(x)
-        loss = self.loss(y_hat, y)
+    def construct(self, *inputs):
+        y_hat = self.network(*inputs[:-1])
+        loss = self.loss(y_hat, inputs[-1])
         return loss
 
+class TrainCh8(nn.Cell):
+    def __init__(self, network, optimizer, grad_op):
+        super().__init__()
+        self.network = network
+        self.optimizer = optimizer
+        self.grad = ops.GradOperation(get_by_list=True)
+        self.grad_op = grad_op
+
+    def construct(self, *inputs):
+        loss = self.network(*inputs)
+        grads = self.grad(self.network, self.optimizer.parameters)(*inputs)
+        grads = self.grad_op(grads)
+        loss = ops.depend(loss, self.optimizer(grads))
+        return loss
+
+class NetWithLossCh8(nn.Cell):
+    def __init__(self, network, loss):
+        super().__init__()
+        self.network = network
+        self.loss = loss
+        
+    def construct(self, *inputs):
+        y_hat, state = self.network(*inputs[:-1])
+        loss = self.loss(y_hat, inputs[-1])
+        return loss
+
+    
 @constexpr
 def compute_kernel_size(inp_shape, output_size):
     kernel_width, kernel_height = inp_shape[2], inp_shape[3]
@@ -582,14 +610,14 @@ def seq_data_iter_random(corpus, batch_size, num_steps):
         initial_indices_per_batch = initial_indices[i: i + batch_size]
         X = [data(j) for j in initial_indices_per_batch]
         Y = [data(j + 1) for j in initial_indices_per_batch]
-        yield mindspore.Tensor(X, mindspore.float32), mindspore.Tensor(Y, mindspore.float32)
+        yield mindspore.Tensor(X, mindspore.int32), mindspore.Tensor(Y, mindspore.int32)
         
 def seq_data_iter_sequential(corpus, batch_size, num_steps):  
     """使用顺序分区生成一个小批量子序列。"""
     offset = random.randint(0, num_steps)
     num_tokens = ((len(corpus) - offset - 1) // batch_size) * batch_size
-    Xs = mindspore.Tensor(corpus[offset: offset + num_tokens], mindspore.float32)
-    Ys = mindspore.Tensor(corpus[offset + 1: offset + 1 + num_tokens], mindspore.float32)
+    Xs = mindspore.Tensor(corpus[offset: offset + num_tokens], mindspore.int32)
+    Ys = mindspore.Tensor(corpus[offset + 1: offset + 1 + num_tokens], mindspore.int32)
     Xs, Ys = Xs.reshape(batch_size, -1), Ys.reshape(batch_size, -1)
     num_batches = Xs.shape[1] // num_steps
     for i in range(0, num_steps * num_batches, num_steps):

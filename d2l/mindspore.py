@@ -644,3 +644,129 @@ def load_data_time_machine(batch_size, num_steps,
     data_iter = SeqDataLoader(
         batch_size, num_steps, use_random_iter, max_tokens)
     return data_iter, data_iter.vocab
+
+def predict_ch8(prefix, num_preds, net, vocab):  
+    """在`prefix`后面生成新字符。"""
+    net.set_train(False)
+    state = net.begin_state(batch_size=1)
+    outputs = [vocab[prefix[0]]]
+    get_input = lambda: mindspore.Tensor([outputs[-1]], mindspore.int32).reshape((1, 1))
+    for y in prefix[1:]:
+        _, state = net(get_input(), state)
+        outputs.append(vocab[y])
+    for _ in range(num_preds):
+        y, state = net(get_input(), state)
+        outputs.append(int(y.argmax(axis=1).reshape(1).asnumpy()))
+    return ''.join([vocab.idx_to_token[i] for i in outputs])
+
+class TrainCh8(nn.Cell):
+    def __init__(self, network, optimizer, theta):
+        super().__init__()
+        self.network = network
+        self.optimizer = optimizer
+        self.grad = ops.GradOperation(get_by_list=True)
+        self.theta = theta
+
+    def construct(self, *inputs):
+        loss = self.network(*inputs)
+        grads = self.grad(self.network, self.optimizer.parameters)(*inputs)
+        grads = ops.clip_by_global_norm(grads, self.theta)
+        loss = ops.depend(loss, self.optimizer(grads))
+        return loss
+
+class NetWithLossCh8(nn.Cell):
+    def __init__(self, network, loss):
+        super().__init__()
+        self.network = network
+        self.loss = loss
+        
+    def construct(self, *inputs):
+        y_hat, state = self.network(*inputs[:-1])
+        loss = self.loss(y_hat, inputs[-1])
+        return loss
+
+def train_epoch_ch8(net, state, train_iter):
+    """训练网络一个迭代周期（定义见第8章）。"""
+    timer = Timer()
+    metric = Accumulator(2)
+    for X, Y in train_iter:
+        y = Y.T.reshape(-1)
+        l = net(X, state, y)
+        metric.add(l.asnumpy() * y.size, y.size)
+    return math.exp(metric[0] / metric[1]), metric[1] / timer.stop()
+
+def train_ch8(net, train_iter, vocab, lr, num_epochs):
+    """训练模型（定义见第8章）。"""
+    animator = Animator(xlabel='epoch', ylabel='perplexity',
+                            legend=['train'], xlim=[10, num_epochs])
+    
+    loss = nn.SoftmaxCrossEntropyWithLogits(sparse=True, reduction='mean')
+    optim = nn.SGD(net.trainable_params(), lr)
+    net_with_loss = NetWithLossCh8(net, loss)
+    train = TrainCh8(net_with_loss, optim, 1)
+    
+    predict = lambda prefix: predict_ch8(prefix, 50, net, vocab)
+    
+    state = net.begin_state(train_iter.batch_size)
+    for epoch in range(num_epochs):
+        ppl, speed = train_epoch_ch8(
+            train, state, train_iter)
+        if (epoch + 1) % 10 == 0:
+            print(predict('time traveller'))
+            animator.add(epoch + 1, [ppl])
+    
+    print(f'困惑度 {ppl:.1f}, {speed:.1f} 词元/秒')
+    print(predict('time traveller'))
+    print(predict('traveller'))
+    
+class RNNModel(nn.Cell):
+    """循环神经网络模型。"""
+    def __init__(self, rnn_layer, vocab_size, **kwargs):
+        super(RNNModel, self).__init__(**kwargs)
+        self.rnn = rnn_layer
+        self.vocab_size = vocab_size
+        self.num_hiddens = self.rnn.hidden_size
+        if not self.rnn.bidirectional:
+            self.num_directions = 1
+            self.linear = nn.Dense(self.num_hiddens, self.vocab_size)
+        else:
+            self.num_directions = 2
+            self.linear = nn.Dense(self.num_hiddens * 2, self.vocab_size)
+        self.on_value = Tensor(1.0, mindspore.float32)
+        self.off_value = Tensor(0.0, mindspore.float32)
+        
+    def construct(self, inputs, state):
+        X = ops.OneHot()(inputs.T, self.vocab_size, self.on_value, self.off_value)
+        Y, state = self.rnn(X, state)
+        output = self.linear(Y.reshape((-1, Y.shape[-1])))
+        return output, state
+
+    def begin_state(self, batch_size=1):
+        if not isinstance(self.rnn, nn.LSTM):
+            return  mnp.zeros((self.num_directions * self.rnn.num_layers,
+                                 batch_size, self.num_hiddens))
+        else:
+            return (mnp.zeros((
+                        self.num_directions * self.rnn.num_layers,
+                        batch_size, self.num_hiddens)),
+                    mnp.zeros((
+                        self.num_directions * self.rnn.num_layers,
+                        batch_size, self.num_hiddens)))
+
+class RNNModelScratch(nn.Cell): 
+    """从零开始实现的循环神经网络模型"""
+    def __init__(self, vocab_size, num_hiddens,
+                 get_params, init_state, forward_fn):
+        super().__init__()
+        self.vocab_size, self.num_hiddens = vocab_size, num_hiddens
+        self.params = get_params(vocab_size, num_hiddens)
+        self.init_state, self.forward_fn = init_state, forward_fn
+        self.on_value = Tensor(1.0, mindspore.float32)
+        self.off_value = Tensor(0.0, mindspore.float32)
+        
+    def construct(self, X, state):
+        X = ops.OneHot()(X.T, self.vocab_size, self.on_value, self.off_value)
+        return self.forward_fn(X, state, self.params)
+
+    def begin_state(self, batch_size):
+        return self.init_state(batch_size, self.num_hiddens)

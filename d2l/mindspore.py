@@ -6,6 +6,7 @@ import random
 import requests
 import hashlib
 import collections
+import zipfile
 import mindspore
 import numpy as np
 import mindspore.numpy as mnp
@@ -109,14 +110,15 @@ class FashionMnist():
         return len(self.data)
 
 class ArrayData():
-    def __init__(self, data, label):
-        self.data, self.label = data, label
-    
+    def __init__(self, data):
+        assert len(data) > 1
+        self.data = data
+
     def __getitem__(self, index):
-        return self.data[index], self.label[index]
+        return (i[index] for i in self.data)
     
     def __len__(self):
-        return len(self.data)
+        return len(self.data[0])
 
 class SGD(nn.Cell):
     def __init__(self, lr, batch_size, parameters):
@@ -292,8 +294,9 @@ def get_fashion_mnist_labels(labels):
 def load_array(data_arrays, batch_size, is_train=True):
     """Construct a PyTorch data iterator.
     Defined in :numref:`sec_utils`"""
-    dataset = ArrayData(data_arrays[0].astype(np.float32), data_arrays[1].astype(np.float32))
-    dataset = ds.GeneratorDataset(source=dataset, column_names=['data', 'label'], shuffle=is_train)
+    dataset = ArrayData(data_arrays)
+    data_column_size = len(data_arrays)
+    dataset = ds.GeneratorDataset(source=dataset, column_names=[str(i) for i in range(data_column_size)], shuffle=is_train)
     dataset = dataset.batch(batch_size)
     return dataset
 
@@ -762,3 +765,34 @@ class RNNModelScratch(nn.Cell):
 
     def begin_state(self, batch_size):
         return self.init_state(batch_size, self.num_hiddens)
+
+class Encoder(nn.Cell):
+    """编码器-解码器架构的基本编码器接口"""
+    def __init__(self, **kwargs):
+        super(Encoder, self).__init__(**kwargs)
+
+    def construct(self, X, *args):
+        raise NotImplementedError
+        
+class Decoder(nn.Cell):
+    """编码器-解码器架构的基本解码器接口"""
+    def __init__(self, **kwargs):
+        super(Decoder, self).__init__(**kwargs)
+
+    def init_state(self, enc_outputs, *args):
+        raise NotImplementedError
+
+    def construct(self, X, state):
+        raise NotImplementedError
+
+class EncoderDecoder(nn.Cell):
+    """编码器-解码器架构的基类"""
+    def __init__(self, encoder, decoder, **kwargs):
+        super(EncoderDecoder, self).__init__(**kwargs)
+        self.encoder = encoder
+        self.decoder = decoder
+
+    def construct(self, enc_X, dec_X, *args):
+        enc_outputs = self.encoder(enc_X, *args)
+        dec_state = self.decoder.init_state(enc_outputs, *args)
+        return self.decoder(dec_X, dec_state)

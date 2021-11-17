@@ -537,26 +537,26 @@ def tokenize(lines, token='word'):
     else:
         print('错误：未知词元类型：' + token)
 
-class Vocab:  
+class Vocab:
     """文本词表"""
     def __init__(self, tokens=None, min_freq=0, reserved_tokens=None):
+        """Defined in :numref:`sec_text_preprocessing`"""
         if tokens is None:
             tokens = []
         if reserved_tokens is None:
             reserved_tokens = []
+        # 按出现频率排序
         counter = count_corpus(tokens)
-        self._token_freqs = sorted(counter.items(), key=lambda x: x[1],
-                                   reverse=True)
-        self.idx_to_token = ['<unk>'] + reserved_tokens
-        self.token_to_idx = {token: idx
-                             for idx, token in enumerate(self.idx_to_token)}
+        self.token_freqs = sorted(counter.items(), key=lambda x: x[1],
+                                  reverse=True)
+        # 未知词元的索引为0
+        self.unk, uniq_tokens = 0, ['<unk>'] + reserved_tokens
+        uniq_tokens += [token for token, freq in self.token_freqs
+                        if freq >= min_freq and token not in uniq_tokens]
         self.idx_to_token, self.token_to_idx = [], dict()
-        for token, freq in self._token_freqs:
-            if freq < min_freq:
-                break
-            if token not in self.token_to_idx:
-                self.idx_to_token.append(token)
-                self.token_to_idx[token] = len(self.idx_to_token) - 1
+        for token in uniq_tokens:
+            self.idx_to_token.append(token)
+            self.token_to_idx[token] = len(self.idx_to_token) - 1
 
     def __len__(self):
         return len(self.idx_to_token)
@@ -570,14 +570,6 @@ class Vocab:
         if not isinstance(indices, (list, tuple)):
             return self.idx_to_token[indices]
         return [self.idx_to_token[index] for index in indices]
-
-    @property
-    def unk(self):
-        return 0
-
-    @property
-    def token_freqs(self):
-        return self._token_freqs
 
 def count_corpus(tokens):  
     """统计词元的频率。"""
@@ -721,11 +713,11 @@ def train_ch8(net, train_iter, vocab, lr, num_epochs):
     
 class RNNModel(nn.Cell):
     """循环神经网络模型。"""
-    def __init__(self, rnn_layer, vocab_size, **kwargs):
+    def __init__(self, rnn_layer, vocab_size, num_hiddens, **kwargs):
         super(RNNModel, self).__init__(**kwargs)
         self.rnn = rnn_layer
         self.vocab_size = vocab_size
-        self.num_hiddens = self.rnn.hidden_size
+        self.num_hiddens = num_hiddens
         if not self.rnn.bidirectional:
             self.num_directions = 1
             self.linear = nn.Dense(self.num_hiddens, self.vocab_size)

@@ -855,3 +855,22 @@ def load_data_nmt(batch_size, num_steps, num_examples=600):
     data_arrays = (src_array, src_valid_len, tgt_array, tgt_valid_len)
     data_iter = load_array(data_arrays, batch_size)
     return data_iter, src_vocab, tgt_vocab
+
+def show_heatmaps(matrices, xlabel, ylabel, titles=None, figsize=(2.5, 2.5),
+                  cmap='Reds'):
+    """Show heatmaps of matrices.
+    Defined in :numref:`sec_attention-cues`"""
+    use_svg_display()
+    num_rows, num_cols = len(matrices), len(matrices[0])
+    fig, axes = plt.subplots(num_rows, num_cols, figsize=figsize,
+                                 sharex=True, sharey=True, squeeze=False)
+    for i, (row_axes, row_matrices) in enumerate(zip(axes, matrices)):
+        for j, (ax, matrix) in enumerate(zip(row_axes, row_matrices)):
+            pcm = ax.imshow(matrix.asnumpy(), cmap=cmap)
+            if i == num_rows - 1:
+                ax.set_xlabel(xlabel)
+            if j == 0:
+                ax.set_ylabel(ylabel)
+            if titles:
+                ax.set_title(titles[j])
+    fig.colorbar(pcm, ax=axes, shrink=0.6);

@@ -794,9 +794,9 @@ class EncoderDecoder(nn.Cell):
         self.encoder = encoder
         self.decoder = decoder
 
-    def construct(self, enc_X, dec_X):
+    def construct(self, enc_X, dec_X, X_valid_len):
         enc_outputs = self.encoder(enc_X)
-        dec_state = self.decoder.init_state(enc_outputs)
+        dec_state = self.decoder.init_state(enc_outputs, X_valid_len)
         return self.decoder(dec_X, dec_state)
 
 def read_data_nmt():
@@ -873,4 +873,149 @@ def show_heatmaps(matrices, xlabel, ylabel, titles=None, figsize=(2.5, 2.5),
                 ax.set_ylabel(ylabel)
             if titles:
                 ax.set_title(titles[j])
-    fig.colorbar(pcm, ax=axes, shrink=0.6);
+    fig.colorbar(pcm, ax=axes, shrink=0.6)
+
+class Seq2SeqEncoder(Encoder):
+    """用于序列到序列学习的循环神经网络编码器"""
+    def __init__(self, vocab_size, embed_size, num_hiddens, num_layers,
+                 dropout=0., **kwargs):
+        super(Seq2SeqEncoder, self).__init__(**kwargs)
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.rnn = nn.GRU(embed_size, num_hiddens, num_layers,
+                          dropout=dropout)
+        self.num_hiddens = num_hiddens
+        self.num_layers = num_layers
+        
+    def construct(self, X):
+        hx = mnp.zeros((self.num_layers, X.shape[0], self.num_hiddens), mindspore.float32)
+        X = self.embedding(X)
+        X = X.transpose(1, 0, 2)
+        output, state = self.rnn(X, hx)
+        return output, state
+
+class MaskedSoftmaxCELoss(nn.Cell):
+    """带遮蔽的softmax交叉熵损失函数"""
+    def __init__(self):
+        super().__init__()
+        self.softmax_ce_loss = nn.SoftmaxCrossEntropyWithLogits(sparse=True)
+
+    def construct(self, pred, label, valid_len):
+        weights = mnp.ones_like(label)
+        weights = sequence_mask(weights, valid_len)        
+        unweighted_loss = self.softmax_ce_loss(pred.view(-1, pred.shape[-1]), label.view(-1))
+        weighted_loss = (unweighted_loss.view(label.shape) * weights).mean(axis=1)
+        return weighted_loss
+
+class NetWithLossCh8_Seq2seq(nn.Cell):
+    def __init__(self, network, loss):
+        super().__init__()
+        self.network = network
+        self.loss = loss
+        
+    def construct(self, *inputs):
+        y_hat, state = self.network(*inputs[:-2])
+        loss = self.loss(y_hat, inputs[-2], inputs[-1])
+        return loss
+    
+def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab):
+    """训练序列到序列模型"""
+
+    optimizer = nn.Adam(net.trainable_params(), lr)
+    loss = MaskedSoftmaxCELoss()
+    net_with_loss = NetWithLossCh8_Seq2seq(net, loss)
+    train = TrainCh8(net_with_loss, optimizer, 1)
+    animator = Animator(xlabel='epoch', ylabel='loss',
+                     xlim=[10, num_epochs])
+    for epoch in range(num_epochs):
+        timer = Timer()
+        metric = Accumulator(2)
+        for batch in data_iter:
+            X, X_valid_len, Y, Y_valid_len = [x.astype(mindspore.int32) for x in batch]
+            bos = mindspore.Tensor([tgt_vocab['<bos>']] * Y.shape[0], mindspore.int32).reshape(-1, 1)
+            dec_input = mnp.concatenate([bos, Y[:, :-1]], 1)
+            l = train(X, dec_input, X_valid_len, Y, Y_valid_len)
+            
+            num_tokens = Y_valid_len.sum()
+            metric.add(l.sum().asnumpy(), num_tokens.asnumpy())
+        if (epoch + 1) % 10 == 0:
+            animator.add(epoch + 1, (metric[0] / metric[1],))
+    print(f'loss {metric[0] / metric[1]:.3f}, {metric[1] / timer.stop():.1f} '
+        f'tokens/sec')
+
+def bleu(pred_seq, label_seq, k):  
+    """计算BLEU"""
+    pred_tokens, label_tokens = pred_seq.split(' '), label_seq.split(' ')
+    len_pred, len_label = len(pred_tokens), len(label_tokens)
+    score = math.exp(min(0, 1 - len_label / len_pred))
+    for n in range(1, k + 1):
+        num_matches, label_subs = 0, collections.defaultdict(int)
+        for i in range(len_label - n + 1):
+            label_subs[''.join(label_tokens[i: i + n])] += 1
+        for i in range(len_pred - n + 1):
+            if label_subs[''.join(pred_tokens[i: i + n])] > 0:
+                num_matches += 1
+                label_subs[''.join(pred_tokens[i: i + n])] -= 1
+        score *= math.pow(num_matches / (len_pred - n + 1), math.pow(0.5, n))
+    return score
+
+def predict_seq2seq(net, src_sentence, src_vocab, tgt_vocab, num_steps, save_attention_weights=False):
+    """序列到序列模型的预测"""
+    net.set_train(False)
+    src_tokens = src_vocab[src_sentence.lower().split(' ')] + [
+        src_vocab['<eos>']]
+    enc_valid_len = mindspore.Tensor([len(src_tokens)], mindspore.int32)
+    src_tokens = truncate_pad(src_tokens, num_steps, src_vocab['<pad>'])
+    enc_X = mnp.expand_dims(mindspore.Tensor(src_tokens, mindspore.int32), 0)
+    enc_outputs = net.encoder(enc_X)
+    dec_state = net.decoder.init_state(enc_outputs, enc_valid_len)
+    dec_X = mnp.expand_dims(mindspore.Tensor([tgt_vocab['<bos>']], mindspore.int32), 0)
+    output_seq, attention_weight_seq = [], []
+    for _ in range(num_steps):
+        Y, dec_state = net.decoder(dec_X, dec_state)
+        dec_X = Y.argmax(axis=2)
+        pred = int(dec_X.squeeze(0).asnumpy())
+        if save_attention_weights:
+            attention_weight_seq.append(net.decoder.attention_weights)
+        if pred == tgt_vocab['<eos>']:
+            break
+        output_seq.append(pred)
+    return ' '.join(tgt_vocab.to_tokens(output_seq)), attention_weight_seq
+
+def sequence_mask(X, valid_len, value=0):
+    """在序列中屏蔽不相关的项"""
+    maxlen = X.shape[1]
+    mask = mnp.arange((maxlen), dtype=mindspore.int32)[None, :] < valid_len[:, None]
+    X[~mask] = value
+    return X
+
+def masked_softmax(X, valid_lens):
+    """通过在最后一个轴上掩蔽元素来执行 softmax 操作"""
+    if valid_lens is None:
+        return ops.Softmax(-1)(X)
+    else:
+        shape = X.shape
+        if valid_lens.ndim == 1:
+            valid_lens = mnp.repeat(valid_lens, shape[1])
+        else:
+            valid_lens = valid_lens.reshape(-1)
+        X = sequence_mask(X.reshape(-1, shape[-1]), valid_lens,
+                              value=-1e6)
+        return ops.Softmax(-1)(X.reshape(shape))
+
+class AdditiveAttention(nn.Cell):
+    """加性注意力"""
+    def __init__(self, key_size, query_size, num_hiddens, dropout, **kwargs):
+        super(AdditiveAttention, self).__init__(**kwargs)
+        self.W_k = nn.Dense(key_size, num_hiddens, has_bias=False)
+        self.W_q = nn.Dense(query_size, num_hiddens, has_bias=False)
+        self.w_v = nn.Dense(num_hiddens, 1, has_bias=False)
+        self.dropout = nn.Dropout(1 - dropout)
+
+    def construct(self, queries, keys, values, valid_lens):
+        queries, keys = self.W_q(queries), self.W_k(keys)
+        features = mnp.expand_dims(queries, 2) + mnp.expand_dims(keys, 1)
+        features = mnp.tanh(features)
+        scores = self.w_v(features).squeeze(-1)
+        attention_weights = masked_softmax(scores, valid_lens)
+        self.attention_weights = attention_weights
+        return ops.BatchMatMul()(self.dropout(attention_weights), values)

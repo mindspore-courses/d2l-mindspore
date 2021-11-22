@@ -1019,3 +1019,55 @@ class AdditiveAttention(nn.Cell):
         attention_weights = masked_softmax(scores, valid_lens)
         self.attention_weights = attention_weights
         return ops.BatchMatMul()(self.dropout(attention_weights), values)
+
+class DotProductAttention(nn.Cell):
+    """缩放点积注意力"""
+    def __init__(self, dropout, **kwargs):
+        super(DotProductAttention, self).__init__(**kwargs)
+        self.dropout = nn.Dropout(1 - dropout)
+
+    def construct(self, queries, keys, values, valid_lens=None):
+        d = queries.shape[-1]
+        scores = ops.BatchMatMul()(queries, keys.swapaxes(1,2)) / mnp.sqrt(d)
+        attention_weights = masked_softmax(scores, valid_lens)
+        return ops.BatchMatMul()(self.dropout(attention_weights), values)
+
+def transpose_qkv(X, num_heads):
+    """为了多注意力头的并行计算而变换形状。"""
+    X = X.reshape(X.shape[0], X.shape[1], num_heads, -1)
+
+    X = X.transpose(0, 2, 1, 3)
+
+    return X.reshape(-1, X.shape[2], X.shape[3])
+
+def transpose_output(X, num_heads):
+    """逆转 `transpose_qkv` 函数的操作。"""
+    X = X.reshape(-1, num_heads, X.shape[1], X.shape[2])
+    X = X.transpose(0, 2, 1, 3)
+    return X.reshape(X.shape[0], X.shape[1], -1)
+
+class MultiHeadAttention(nn.Cell):
+    """多头注意力"""
+    def __init__(self, key_size, query_size, value_size, num_hiddens,
+                 num_heads, dropout, has_bias=False, **kwargs):
+        super(MultiHeadAttention, self).__init__(**kwargs)
+        self.num_heads = num_heads
+        self.attention = DotProductAttention(dropout)
+        self.W_q = nn.Dense(query_size, num_hiddens, has_bias=has_bias)
+        self.W_k = nn.Dense(key_size, num_hiddens, has_bias=has_bias)
+        self.W_v = nn.Dense(value_size, num_hiddens, has_bias=has_bias)
+        self.W_o = nn.Dense(num_hiddens, num_hiddens, has_bias=has_bias)
+
+    def construct(self, queries, keys, values, valid_lens):
+        queries = transpose_qkv(self.W_q(queries), self.num_heads)
+        keys = transpose_qkv(self.W_k(keys), self.num_heads)
+        values = transpose_qkv(self.W_v(values), self.num_heads)
+
+        if valid_lens is not None:
+            valid_lens = mnp.repeat(
+                valid_lens, repeats=self.num_heads, axis=0)
+
+        output = self.attention(queries, keys, values, valid_lens)
+
+        output_concat = transpose_output(output, self.num_heads)
+        return self.W_o(output_concat)

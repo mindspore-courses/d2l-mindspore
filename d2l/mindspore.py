@@ -19,6 +19,7 @@ from IPython import display
 import mindspore.dataset.vision.c_transforms as CV
 import mindspore.dataset.transforms.c_transforms as C
 import mindspore.dataset as ds
+from mindspore.common.initializer import initializer, HeUniform, Uniform, Normal, _calculate_fan_in_and_fan_out
 
 DATA_HUB = dict()
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
@@ -795,9 +796,10 @@ class EncoderDecoder(nn.Cell):
         self.decoder = decoder
 
     def construct(self, enc_X, dec_X, X_valid_len):
-        enc_outputs = self.encoder(enc_X)
+        enc_outputs = self.encoder(enc_X, X_valid_len)
         dec_state = self.decoder.init_state(enc_outputs, X_valid_len)
-        return self.decoder(dec_X, dec_state)
+        dec_outputs, state, _ = self.decoder(dec_X, dec_state)
+        return dec_outputs, state
 
 def read_data_nmt():
     """载入“英语－法语”数据集"""
@@ -886,7 +888,7 @@ class Seq2SeqEncoder(Encoder):
         self.num_hiddens = num_hiddens
         self.num_layers = num_layers
         
-    def construct(self, X):
+    def construct(self, X, X_len=None):
         hx = mnp.zeros((self.num_layers, X.shape[0], self.num_hiddens), mindspore.float32)
         X = self.embedding(X)
         X = X.transpose(1, 0, 2)
@@ -966,16 +968,16 @@ def predict_seq2seq(net, src_sentence, src_vocab, tgt_vocab, num_steps, save_att
     enc_valid_len = mindspore.Tensor([len(src_tokens)], mindspore.int32)
     src_tokens = truncate_pad(src_tokens, num_steps, src_vocab['<pad>'])
     enc_X = mnp.expand_dims(mindspore.Tensor(src_tokens, mindspore.int32), 0)
-    enc_outputs = net.encoder(enc_X)
+    enc_outputs, _ = net.encoder(enc_X, enc_valid_len)
     dec_state = net.decoder.init_state(enc_outputs, enc_valid_len)
     dec_X = mnp.expand_dims(mindspore.Tensor([tgt_vocab['<bos>']], mindspore.int32), 0)
     output_seq, attention_weight_seq = [], []
     for _ in range(num_steps):
-        Y, dec_state = net.decoder(dec_X, dec_state)
+        Y, dec_state, attention_weights = net.decoder(dec_X, dec_state)
         dec_X = Y.argmax(axis=2)
         pred = int(dec_X.squeeze(0).asnumpy())
         if save_attention_weights:
-            attention_weight_seq.append(net.decoder.attention_weights)
+            attention_weight_seq.append(attention_weights)
         if pred == tgt_vocab['<eos>']:
             break
         output_seq.append(pred)
@@ -1017,8 +1019,8 @@ class AdditiveAttention(nn.Cell):
         features = mnp.tanh(features)
         scores = self.w_v(features).squeeze(-1)
         attention_weights = masked_softmax(scores, valid_lens)
-        self.attention_weights = attention_weights
-        return ops.BatchMatMul()(self.dropout(attention_weights), values)
+        outputs = ops.BatchMatMul()(self.dropout(attention_weights), values)
+        return outputs, attention_weights
 
 class DotProductAttention(nn.Cell):
     """缩放点积注意力"""
@@ -1030,7 +1032,8 @@ class DotProductAttention(nn.Cell):
         d = queries.shape[-1]
         scores = ops.BatchMatMul()(queries, keys.swapaxes(1,2)) / mnp.sqrt(d)
         attention_weights = masked_softmax(scores, valid_lens)
-        return ops.BatchMatMul()(self.dropout(attention_weights), values)
+        outputs = ops.BatchMatMul()(self.dropout(attention_weights), values)
+        return outputs, attention_weights
 
 def transpose_qkv(X, num_heads):
     """为了多注意力头的并行计算而变换形状。"""
@@ -1053,10 +1056,10 @@ class MultiHeadAttention(nn.Cell):
         super(MultiHeadAttention, self).__init__(**kwargs)
         self.num_heads = num_heads
         self.attention = DotProductAttention(dropout)
-        self.W_q = nn.Dense(query_size, num_hiddens, has_bias=has_bias)
-        self.W_k = nn.Dense(key_size, num_hiddens, has_bias=has_bias)
-        self.W_v = nn.Dense(value_size, num_hiddens, has_bias=has_bias)
-        self.W_o = nn.Dense(num_hiddens, num_hiddens, has_bias=has_bias)
+        self.W_q = Dense(query_size, num_hiddens, has_bias=has_bias)
+        self.W_k = Dense(key_size, num_hiddens, has_bias=has_bias)
+        self.W_v = Dense(value_size, num_hiddens, has_bias=has_bias)
+        self.W_o = Dense(num_hiddens, num_hiddens, has_bias=has_bias)
 
     def construct(self, queries, keys, values, valid_lens):
         queries = transpose_qkv(self.W_q(queries), self.num_heads)
@@ -1067,7 +1070,34 @@ class MultiHeadAttention(nn.Cell):
             valid_lens = mnp.repeat(
                 valid_lens, repeats=self.num_heads, axis=0)
 
-        output = self.attention(queries, keys, values, valid_lens)
+        output, attention_weights = self.attention(queries, keys, values, valid_lens)
 
         output_concat = transpose_output(output, self.num_heads)
-        return self.W_o(output_concat)
+        return self.W_o(output_concat), attention_weights
+
+class PositionalEncoding(nn.Cell):
+    """位置编码"""
+    def __init__(self, num_hiddens, dropout, max_len=1000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(1 - dropout)
+        self.P = mnp.zeros((1, max_len, num_hiddens))
+        X = mnp.arange(max_len, dtype=mindspore.float32).reshape(
+            -1, 1) / mnp.power(mindspore.Tensor(10000, mindspore.int32), mnp.arange(
+            0, num_hiddens, 2, dtype=mindspore.float32) / num_hiddens)
+        self.P[:, :, 0::2] = mnp.sin(X)
+        self.P[:, :, 1::2] = mnp.cos(X)
+
+    def construct(self, X):
+        X = X + self.P[:, :X.shape[1], :]
+        return self.dropout(X)
+
+class Dense(nn.Dense):
+    def __init__(self, in_channels, out_channels, has_bias=True, activation=None):
+        super().__init__(in_channels, out_channels, weight_init='xavier_uniform', bias_init='zeros', has_bias=has_bias, activation=activation)
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        if self.has_bias:
+            fan_in, _ = _calculate_fan_in_and_fan_out(self.weight.shape)
+            bound = 1 / math.sqrt(fan_in)
+            self.bias.set_data(initializer(Uniform(bound), [self.out_channels]))

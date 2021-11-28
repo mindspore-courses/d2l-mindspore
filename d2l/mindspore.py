@@ -906,7 +906,7 @@ class MaskedSoftmaxCELoss(nn.Cell):
         weights = sequence_mask(weights, valid_len)        
         unweighted_loss = self.softmax_ce_loss(pred.view(-1, pred.shape[-1]), label.view(-1))
         weighted_loss = (unweighted_loss.view(label.shape) * weights).mean(axis=1)
-        return weighted_loss
+        return weighted_loss.sum()
 
 class NetWithLossCh8_Seq2seq(nn.Cell):
     def __init__(self, network, loss):
@@ -936,7 +936,6 @@ def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab):
             bos = mindspore.Tensor([tgt_vocab['<bos>']] * Y.shape[0], mindspore.int32).reshape(-1, 1)
             dec_input = mnp.concatenate([bos, Y[:, :-1]], 1)
             l = train(X, dec_input, X_valid_len, Y, Y_valid_len)
-            
             num_tokens = Y_valid_len.sum()
             metric.add(l.sum().asnumpy(), num_tokens.asnumpy())
         if (epoch + 1) % 10 == 0:
@@ -968,7 +967,7 @@ def predict_seq2seq(net, src_sentence, src_vocab, tgt_vocab, num_steps, save_att
     enc_valid_len = mindspore.Tensor([len(src_tokens)], mindspore.int32)
     src_tokens = truncate_pad(src_tokens, num_steps, src_vocab['<pad>'])
     enc_X = mnp.expand_dims(mindspore.Tensor(src_tokens, mindspore.int32), 0)
-    enc_outputs, _ = net.encoder(enc_X, enc_valid_len)
+    enc_outputs = net.encoder(enc_X, enc_valid_len)
     dec_state = net.decoder.init_state(enc_outputs, enc_valid_len)
     dec_X = mnp.expand_dims(mindspore.Tensor([tgt_vocab['<bos>']], mindspore.int32), 0)
     output_seq, attention_weight_seq = [], []
@@ -1030,7 +1029,8 @@ class DotProductAttention(nn.Cell):
 
     def construct(self, queries, keys, values, valid_lens=None):
         d = queries.shape[-1]
-        scores = ops.BatchMatMul()(queries, keys.swapaxes(1,2)) / mnp.sqrt(d)
+        scores = ops.BatchMatMul()(queries, keys.swapaxes(1,2)) / ops.Sqrt()(ops.ScalarToTensor()(d, mindspore.float32))
+
         attention_weights = masked_softmax(scores, valid_lens)
         outputs = ops.BatchMatMul()(self.dropout(attention_weights), values)
         return outputs, attention_weights
@@ -1101,3 +1101,64 @@ class Dense(nn.Dense):
             fan_in, _ = _calculate_fan_in_and_fan_out(self.weight.shape)
             bound = 1 / math.sqrt(fan_in)
             self.bias.set_data(initializer(Uniform(bound), [self.out_channels]))
+
+class Embedding(nn.Embedding):
+    def __init__(self, vocab_size, embedding_size, use_one_hot=False, embedding_table='normal', dtype=mindspore.float32, padding_idx=None):
+        if embedding_table == 'normal':
+            embedding_table = Normal(1.0)
+        super().__init__(vocab_size, embedding_size, use_one_hot, embedding_table, dtype, padding_idx)
+    @classmethod
+    def from_pretrained_embedding(cls, embeddings:Tensor, freeze=True, padding_idx=None):
+        rows, cols = embeddings.shape
+        embedding = cls(rows, cols, embedding_table=embeddings, padding_idx=padding_idx)
+        embedding.embedding_table.requires_grad = not freeze
+        return embedding
+
+def train_transformer(net, data_iter, lr, num_epochs, tgt_vocab):
+    """训练序列到序列模型"""
+
+    optimizer = nn.Adam(net.trainable_params(), lr)
+    loss = MaskedSoftmaxCELoss()
+    net_with_loss = NetWithLossCh8_Seq2seq(net, loss)
+    train = TrainCh8(net_with_loss, optimizer, 1)
+    animator = Animator(xlabel='epoch', ylabel='loss',
+                     xlim=[10, num_epochs])
+    for epoch in range(num_epochs):
+        timer = Timer()
+        metric = Accumulator(2)
+        for batch in data_iter:
+            X, X_valid_len, Y, Y_valid_len = [x.astype(mindspore.int32) for x in batch]
+            bos = mindspore.Tensor([tgt_vocab['<bos>']] * Y.shape[0], mindspore.int32).reshape(-1, 1)
+            dec_input = mnp.concatenate([bos, Y[:, :-1]], 1)
+            batch_size, num_steps = X.shape
+            dec_valid_lens = mnp.tile(mnp.arange(1, num_steps + 1), (batch_size, 1))
+            l = train(X, dec_input, X_valid_len, dec_valid_lens, Y, Y_valid_len)
+            num_tokens = Y_valid_len.sum()
+            metric.add(l.sum().asnumpy(), num_tokens.asnumpy())
+        if (epoch + 1) % 10 == 0:
+            animator.add(epoch + 1, (metric[0] / metric[1],))
+    print(f'loss {metric[0] / metric[1]:.3f}, {metric[1] / timer.stop():.1f} '
+        f'tokens/sec')
+    
+def predict_transformer(net, src_sentence, src_vocab, tgt_vocab, num_steps, save_attention_weights=False):
+    """序列到序列模型的预测"""
+    net.set_train(False)
+    src_tokens = src_vocab[src_sentence.lower().split(' ')] + [
+        src_vocab['<eos>']]
+    enc_valid_len = mindspore.Tensor([len(src_tokens)], mindspore.int32)
+    src_tokens = truncate_pad(src_tokens, num_steps, src_vocab['<pad>'])
+    enc_X = mnp.expand_dims(mindspore.Tensor(src_tokens, mindspore.int32), 0)
+    enc_outputs, encoder_attention_weight = net.encoder(enc_X, enc_valid_len)
+    dec_state = net.decoder.init_state(enc_outputs, enc_valid_len)
+    dec_X = mnp.expand_dims(mindspore.Tensor([tgt_vocab['<bos>']], mindspore.int32), 0)
+    output_seq, attention_weight_seq = [], []
+    for _ in range(num_steps):
+        Y, dec_state, attention_weights = net.decoder(dec_X, dec_state, None)
+        dec_X = Y.argmax(axis=2)
+        pred = int(dec_X.squeeze(0).asnumpy())
+        if save_attention_weights:
+            attention_weight_seq.append(attention_weights)
+        if pred == tgt_vocab['<eos>']:
+            break
+        output_seq.append(pred)
+    return ' '.join(tgt_vocab.to_tokens(output_seq)), attention_weight_seq, encoder_attention_weight

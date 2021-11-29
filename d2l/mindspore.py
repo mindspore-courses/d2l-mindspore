@@ -16,6 +16,7 @@ from mindspore.ops import constexpr
 from mindspore import Tensor
 from matplotlib import pyplot as plt
 from IPython import display
+from PIL import Image
 import mindspore.dataset.vision.c_transforms as CV
 import mindspore.dataset.transforms.c_transforms as C
 import mindspore.dataset as ds

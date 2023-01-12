@@ -70,7 +70,7 @@ class Accumulator:
 
     def __getitem__(self, idx):
         return self.data[idx]
-    
+
 class Animator:  
     """在动画中绘制数据。"""
     def __init__(self, xlabel=None, ylabel=None, legend=None, xlim=None,
@@ -124,7 +124,7 @@ class ArrayData():
         self.data = data
 
     def __getitem__(self, index):
-        return (i[index] for i in self.data)
+        return (i[int(index)] for i in self.data)
     
     def __len__(self):
         return len(self.data[0])
@@ -428,13 +428,13 @@ def predict_ch3(net, dataset, n=6):
     show_images(
         X[0:n].reshape((n, 28, 28)), 1, n, titles=titles[0:n])
     
-def evaluate_loss(net, dataset):
+def evaluate_loss(net, loss, dataset):
     """Evaluate the loss of a model on the given dataset.
     Defined in :numref:`sec_utils`"""
-    net.set_train(False)
     metric = Accumulator(2)  # Sum of losses, no. of examples
     for X, y in dataset.create_tuple_iterator():
-        l = net(X, y)
+        z = net(X)
+        l = loss(z, y)
         metric.add(l.sum().asnumpy(), l.size)
     return metric[0] / metric[1]
 

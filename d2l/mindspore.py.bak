@@ -1204,6 +1204,7 @@ sin = ops.sin
 cos = ops.cos
 sinh = ops.sinh
 cosh = ops.cosh
+
 tanh = ops.tanh
 concat = ops.concat
 float32 = mindspore.float32

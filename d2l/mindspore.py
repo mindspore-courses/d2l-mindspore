@@ -21,8 +21,8 @@ d2l = sys.modules[__name__]
 
 from IPython import display
 from PIL import Image
-import mindspore.dataset.vision.c_transforms as CV
-import mindspore.dataset.transforms.c_transforms as C
+import mindspore.dataset.vision as vision
+import mindspore.dataset.transforms as transforms
 import mindspore.dataset as ds
 from mindspore.common.initializer import initializer, HeUniform, Uniform, Normal, _calculate_fan_in_and_fan_out
 
@@ -278,17 +278,18 @@ def load_mnist(path, kind='train'):
 
     return images, labels
 
-def load_data_fashion_mnist(data_path, batch_size, resize=None, works=1):  
+def load_data_fashion_mnist(batch_size, resize=None, works=1):  
     """将Fashion-MNIST数据集加载到内存中。"""
+    data_path = "../data"
     mnist_train = FashionMnist(data_path, kind='train')
     mnist_test = FashionMnist(data_path, kind='t10k')
 
     mnist_train = ds.GeneratorDataset(source=mnist_train, column_names=['image', 'label'], shuffle=False)
     mnist_test = ds.GeneratorDataset(source=mnist_test, column_names=['image', 'label'], shuffle=False)
-    trans = [CV.Rescale(1.0 / 255.0, 0), CV.HWC2CHW()]
-    type_cast_op = C.TypeCast(mindspore.int32)
+    trans = [vision.Rescale(1.0 / 255.0, 0), vision.HWC2CHW()]
+    type_cast_op = transforms.TypeCast(mindspore.int32)
     if resize:
-        trans.insert(0, CV.Resize(resize))
+        trans.insert(0, vision.Resize(resize))
     mnist_train = mnist_train.map(trans, input_columns=["image"])
     mnist_test = mnist_test.map(trans, input_columns=["image"])
     mnist_train = mnist_train.map(type_cast_op, input_columns=['label'])
@@ -1113,7 +1114,7 @@ class Embedding(nn.Embedding):
             embedding_table = Normal(1.0)
         super().__init__(vocab_size, embedding_size, use_one_hot, embedding_table, dtype, padding_idx)
     @classmethod
-    def from_pretrained_embedding(cls, embeddings:Tensor, freeze=True, padding_idx=None):
+    def from_pretrained_embedding(cls, embeddingsc:Tensor, freeze=True, padding_idx=None):
         rows, cols = embeddings.shape
         embedding = cls(rows, cols, embedding_table=embeddings, padding_idx=padding_idx)
         embedding.embedding_table.requires_grad = not freeze
@@ -1168,6 +1169,7 @@ def predict_transformer(net, src_sentence, src_vocab, tgt_vocab, num_steps, save
         output_seq.append(pred)
     return ' '.join(tgt_vocab.to_tokens(output_seq)), attention_weight_seq, encoder_attention_weight
 
+
 def train_2d(trainer, steps=20, f_grad=None):
     """Optimize a 2D objective function with a customized trainer.
 
@@ -1197,7 +1199,6 @@ def show_trace_2d(f, results):
     d2l.plt.ylabel('x2')
 
 
-
 abs = ops.abs
 arange = ops.arange
 sin = ops.sin
@@ -1205,6 +1206,7 @@ cos = ops.cos
 sinh = ops.sinh
 cosh = ops.cosh
 tanh = ops.tanh
+
 concat = ops.concat
 float32 = mindspore.float32
 ones = ops.ones

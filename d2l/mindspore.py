@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import math
 import time
@@ -15,6 +16,9 @@ import mindspore.ops as ops
 from mindspore.ops import constexpr
 from mindspore import Tensor
 from matplotlib import pyplot as plt
+
+d2l = sys.modules[__name__]
+
 from IPython import display
 from PIL import Image
 import mindspore.dataset.vision as vision
@@ -1165,6 +1169,33 @@ def predict_transformer(net, src_sentence, src_vocab, tgt_vocab, num_steps, save
         output_seq.append(pred)
     return ' '.join(tgt_vocab.to_tokens(output_seq)), attention_weight_seq, encoder_attention_weight
 
+def train_2d(trainer, steps=20, f_grad=None):
+    """Optimize a 2D objective function with a customized trainer.
+
+    Defined in :numref:`subsec_gd-learningrate`"""
+    # `s1` and `s2` are internal state variables that will be used later
+    x1, x2, s1, s2 = -5, -2, 0, 0
+    results = [(x1, x2)]
+    for i in range(steps):
+        if f_grad:
+            x1, x2, s1, s2 = trainer(x1, x2, s1, s2, f_grad)
+        else:
+            x1, x2, s1, s2 = trainer(x1, x2, s1, s2)
+        results.append((x1, x2))
+    print(f'epoch {i + 1}, x1: {float(x1):f}, x2: {float(x2):f}')
+    return results
+
+def show_trace_2d(f, results):
+    """Show the trace of 2D variables during optimization.
+
+    Defined in :numref:`subsec_gd-learningrate`"""
+    d2l.set_figsize()
+    d2l.plt.plot(*zip(*results), '-o', color='#ff7f0e')
+    x1, x2 = d2l.meshgrid((d2l.arange(-5.5, 1.0, 0.1),
+                          d2l.arange(-3.0, 1.0, 0.1)))
+    d2l.plt.contour(x1, x2, f(x1, x2), colors='#1f77b4')
+    d2l.plt.xlabel('x1')
+    d2l.plt.ylabel('x2')
 
 abs = ops.abs
 arange = ops.arange
@@ -1174,6 +1205,14 @@ ones = ops.ones
 zeros = ops.zeros
 matmul = ops.matmul
 stack = ops.stack
+sin = ops.sin
+cos = ops.cos
+sinh = ops.sinh
+cosh = ops.cosh
+tanh = ops.tanh
+exp = ops.exp
+meshgrid = ops.meshgrid
+linspace = ops.linspace
 tensor = lambda x: mindspore.Tensor(x, dtype=mindspore.float32)
 normal = lambda shape, mean, stddev, *args : ops.normal(shape, tensor(mean), tensor(stddev), *args)
 reduce_sum = lambda x, *args, **kwargs: x.sum(*args, **kwargs)

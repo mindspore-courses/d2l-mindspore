@@ -433,13 +433,14 @@ def predict_ch3(net, dataset, n=6):
     show_images(
         X[0:n].reshape((n, 28, 28)), 1, n, titles=titles[0:n])
     
-def evaluate_loss(net, dataset):
+def evaluate_loss(net, loss, dataset):
     """Evaluate the loss of a model on the given dataset.
     Defined in :numref:`sec_utils`"""
     net.set_train(False)
     metric = Accumulator(2)  # Sum of losses, no. of examples
     for X, y in dataset.create_tuple_iterator():
-        l = net(X, y)
+        z = net(X)
+        l = loss(z, y)
         metric.add(l.sum().asnumpy(), l.size)
     return metric[0] / metric[1]
 
@@ -1114,7 +1115,7 @@ class Embedding(nn.Embedding):
             embedding_table = Normal(1.0)
         super().__init__(vocab_size, embedding_size, use_one_hot, embedding_table, dtype, padding_idx)
     @classmethod
-    def from_pretrained_embedding(cls, embeddingsc:Tensor, freeze=True, padding_idx=None):
+    def from_pretrained_embedding(cls, embeddings:Tensor, freeze=True, padding_idx=None):
         rows, cols = embeddings.shape
         embedding = cls(rows, cols, embedding_table=embeddings, padding_idx=padding_idx)
         embedding.embedding_table.requires_grad = not freeze

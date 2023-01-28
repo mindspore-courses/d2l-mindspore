@@ -61,7 +61,7 @@ class Timer:
         """返回累计时间。"""
         return np.array(self.times).cumsum().tolist()
 
-class Accumulator:  
+class Accumulator:
     """在`n`个变量上累加。"""
     def __init__(self, n):
         self.data = [0.0] * n
@@ -74,8 +74,8 @@ class Accumulator:
 
     def __getitem__(self, idx):
         return self.data[idx]
-    
-class Animator:  
+
+class Animator:
     """在动画中绘制数据。"""
     def __init__(self, xlabel=None, ylabel=None, legend=None, xlim=None,
                  ylim=None, xscale='linear', yscale='linear',
@@ -115,10 +115,10 @@ class Animator:
 class FashionMnist():
     def __init__(self, path, kind):
         self.data, self.label = load_mnist(path, kind)
-    
+
     def __getitem__(self, index):
         return self.data[index], self.label[index]
-    
+
     def __len__(self):
         return len(self.data)
 
@@ -129,7 +129,7 @@ class ArrayData():
 
     def __getitem__(self, index):
         return (i[index] for i in self.data)
-    
+
     def __len__(self):
         return len(self.data[0])
 
@@ -139,19 +139,19 @@ class SGD(nn.Cell):
         self.lr = lr
         self.batch_size = batch_size
         self.parameters = parameters
-        
+
     def construct(self, grads):
         for idx in range(len(self.parameters)):
             ops.assign(self.parameters[idx], self.parameters[idx] - self.lr * grads[idx] / self.batch_size)
         return True
-    
+
 class Train(nn.Cell):
     def __init__(self, network, optimizer):
         super().__init__()
         self.network = network
         self.optimizer = optimizer
         self.grad = ops.GradOperation(get_by_list=True)
-        
+
     def construct(self, *inputs):
         loss = self.network(*inputs)
         grads = self.grad(self.network, self.optimizer.parameters)(*inputs)
@@ -163,7 +163,7 @@ class NetWithLoss(nn.Cell):
         super().__init__()
         self.network = network
         self.loss = loss
-        
+
     def construct(self, *inputs):
         y_hat = self.network(*inputs[:-1])
         loss = self.loss(y_hat, inputs[-1])
@@ -189,21 +189,21 @@ class NetWithLossCh8(nn.Cell):
         super().__init__()
         self.network = network
         self.loss = loss
-        
+
     def construct(self, *inputs):
         y_hat, state = self.network(*inputs[:-1])
         loss = self.loss(y_hat, inputs[-1])
         return loss
 
-    
+
 @constexpr
 def compute_kernel_size(inp_shape, output_size):
     kernel_width, kernel_height = inp_shape[2], inp_shape[3]
     if isinstance(output_size, int):
-        kernel_width = math.ceil(kernel_width / output_size) 
+        kernel_width = math.ceil(kernel_width / output_size)
         kernel_height = math.ceil(kernel_height / output_size)
     elif isinstance(output_size, list) or isinstance(output_size, tuple):
-        kernel_width = math.ceil(kernel_width / output_size[0]) 
+        kernel_width = math.ceil(kernel_width / output_size[0])
         kernel_height = math.ceil(kernel_height / output_size[1])
     return (kernel_width, kernel_height)
 
@@ -211,7 +211,7 @@ class AdaptiveAvgPool2d(nn.Cell):
     def __init__(self, output_size=None):
         super().__init__()
         self.output_size = output_size
-    
+
     def construct(self, x):
         inp_shape = x.shape
         kernel_size = compute_kernel_size(inp_shape, self.output_size)
@@ -221,12 +221,12 @@ class AdaptiveMaxPool2d(nn.Cell):
     def __init__(self, output_size=None):
         super().__init__()
         self.output_size = output_size
-    
+
     def construct(self, x):
         inp_shape = x.shape
         kernel_size = compute_kernel_size(inp_shape, self.output_size)
         return ops.MaxPool(kernel_size, kernel_size)(x)
-    
+
 class MaxPool2d(nn.Cell):
     def __init__(self, kernel_size, stride=None, padding=0):
         super().__init__()
@@ -242,7 +242,7 @@ class MaxPool2d(nn.Cell):
         else:
             raise ValueError('padding should be a tuple include 2 numbers or a int number')
         self.pad = ops.Pad(paddings)
-    
+
     def construct(self, x):
         if self.use_pad:
             x = self.pad(x)
@@ -251,7 +251,7 @@ class MaxPool2d(nn.Cell):
 def linreg(x, w, b):
     return ops.matmul(x, w) + b
 
-def squared_loss(y_hat, y):  
+def squared_loss(y_hat, y):
     """均方损失。"""
     return (y_hat - y.reshape(y_hat.shape)) ** 2 / 2
 
@@ -263,10 +263,10 @@ def load_mnist(path, kind='train'):
     """Load MNIST data from `path`"""
     labels_path = os.path.join(path,
                                '%s-labels-idx1-ubyte.gz'
-                               % kind)
+                               %kind)
     images_path = os.path.join(path,
                                '%s-images-idx3-ubyte.gz'
-                               % kind)
+                               %kind)
 
     with gzip.open(labels_path, 'rb') as lbpath:
         labels = np.frombuffer(lbpath.read(), dtype=np.uint8,
@@ -278,7 +278,7 @@ def load_mnist(path, kind='train'):
 
     return images, labels
 
-def load_data_fashion_mnist(batch_size, resize=None, works=1):  
+def load_data_fashion_mnist(batch_size, resize=None, works=1):
     """将Fashion-MNIST数据集加载到内存中。"""
     data_path = "../data"
     mnist_train = FashionMnist(data_path, kind='train')
@@ -378,28 +378,28 @@ def plot(X, Y=None, xlabel=None, ylabel=None, legend=[], xlim=None,
         axes.plot(x,y,fmt) if len(x) else axes.plot(y,fmt)
     set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend)
 
-def synthetic_data(w, b, num_examples):  
+def synthetic_data(w, b, num_examples):
     """生成 y = Xw + b + 噪声。"""
     X = np.random.normal(0, 1, (num_examples, len(w)))
     y = np.matmul(X, w) + b
     y += np.random.normal(0, 0.01, y.shape)
     return X.astype(np.float32), y.reshape((-1, 1)).astype(np.float32)
 
-def accuracy(y_hat, y):  
+def accuracy(y_hat, y):
     """计算预测正确的数量。"""
     if len(y_hat.shape) > 1 and y_hat.shape[1] > 1:
         y_hat = y_hat.argmax(axis=1)
     cmp = y_hat.asnumpy() == y.asnumpy()
     return float(cmp.sum())
 
-def evaluate_accuracy(net, dataset):  
+def evaluate_accuracy(net, dataset):
     """计算在指定数据集上模型的精度。"""
     metric = Accumulator(2)
     for X, y in dataset.create_tuple_iterator():
         metric.add(accuracy(net(X), y), y.size)
     return metric[0] / metric[1]
 
-def train_epoch_ch3(net, dataset, loss, optim):  
+def train_epoch_ch3(net, dataset, loss, optim):
     """训练模型一个迭代周期（定义见第3章）。"""
     net_with_loss = nn.WithLossCell(net, loss)
     net_train = nn.TrainOneStepCell(net_with_loss, optim)
@@ -412,7 +412,7 @@ def train_epoch_ch3(net, dataset, loss, optim):
         metric.add(float(l.asnumpy()), accuracy(y_hat, y), y.size)
     return metric[0] / metric[2] * batch_size, metric[1] / metric[2]
 
-def train_ch3(net, train_dataset, test_dataset, loss, num_epochs, optim):  
+def train_ch3(net, train_dataset, test_dataset, loss, num_epochs, optim):
     """训练模型（定义见第3章）。"""
     animator = Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 0.9],
                         legend=['train loss', 'train acc', 'test acc'])
@@ -423,7 +423,7 @@ def train_ch3(net, train_dataset, test_dataset, loss, num_epochs, optim):
         animator.add(epoch + 1, train_metrics + (test_acc,))
     train_loss, train_acc = train_metrics
 
-def predict_ch3(net, dataset, n=6):  
+def predict_ch3(net, dataset, n=6):
     """预测标签（定义见第3章）。"""
     for X, y in dataset.create_tuple_iterator():
         break
@@ -432,11 +432,10 @@ def predict_ch3(net, dataset, n=6):
     titles = [true +'\n' + pred for true, pred in zip(trues, preds)]
     show_images(
         X[0:n].reshape((n, 28, 28)), 1, n, titles=titles[0:n])
-    
+
 def evaluate_loss(net, loss, dataset):
     """Evaluate the loss of a model on the given dataset.
     Defined in :numref:`sec_utils`"""
-    net.set_train(False)
     metric = Accumulator(2)  # Sum of losses, no. of examples
     for X, y in dataset.create_tuple_iterator():
         z = net(X)
@@ -444,7 +443,7 @@ def evaluate_loss(net, loss, dataset):
         metric.add(l.sum().asnumpy(), l.size)
     return metric[0] / metric[1]
 
-def corr2d(X, K):  
+def corr2d(X, K):
     """计算二维互相关运算。"""
     h, w = K.shape
     Y = mnp.zeros((X.shape[0] - h + 1, X.shape[1] - w + 1))
@@ -453,7 +452,7 @@ def corr2d(X, K):
             Y[i, j] = (X[i:i + h, j:j + w] * K).sum()
     return Y
 
-def evaluate_accuracy_gpu(net, dataset, device=None): 
+def evaluate_accuracy_gpu(net, dataset, device=None):
     """使用GPU计算模型在数据集上的精度。"""
     net.set_train(False)
     metric = Accumulator(2)
@@ -533,15 +532,15 @@ def download_all():
     Defined in :numref:`sec_kaggle_house`"""
     for name in DATA_HUB:
         download(name)
-        
 
-def read_time_machine():  
+
+def read_time_machine():
     """Load the time machine dataset into a list of text lines."""
     with open(download('time_machine'), 'r') as f:
         lines = f.readlines()
     return [re.sub('[^A-Za-z]+', ' ', line).strip().lower() for line in lines]
 
-def tokenize(lines, token='word'):  
+def tokenize(lines, token='word'):
     """将文本行拆分为单词或字符词元。"""
     if token == 'word':
         return [line.split() for line in lines]
@@ -584,13 +583,13 @@ class Vocab:
             return self.idx_to_token[indices]
         return [self.idx_to_token[index] for index in indices]
 
-def count_corpus(tokens):  
+def count_corpus(tokens):
     """统计词元的频率。"""
     if len(tokens) == 0 or isinstance(tokens[0], list):
         tokens = [token for line in tokens for token in line]
     return collections.Counter(tokens)
 
-def load_corpus_time_machine(max_tokens=-1):  
+def load_corpus_time_machine(max_tokens=-1):
     """返回时光机器数据集的词元索引列表和词表。"""
     lines = read_time_machine()
     tokens = tokenize(lines, 'char')
@@ -600,7 +599,7 @@ def load_corpus_time_machine(max_tokens=-1):
         corpus = corpus[:max_tokens]
     return corpus, vocab
 
-def seq_data_iter_random(corpus, batch_size, num_steps):  
+def seq_data_iter_random(corpus, batch_size, num_steps):
     """使用随机抽样生成一个小批量子序列。"""
     corpus = corpus[random.randint(0, num_steps - 1):]
     num_subseqs = (len(corpus) - 1) // num_steps
@@ -616,8 +615,8 @@ def seq_data_iter_random(corpus, batch_size, num_steps):
         X = [data(j) for j in initial_indices_per_batch]
         Y = [data(j + 1) for j in initial_indices_per_batch]
         yield mindspore.Tensor(X, mindspore.int32), mindspore.Tensor(Y, mindspore.int32)
-        
-def seq_data_iter_sequential(corpus, batch_size, num_steps):  
+
+def seq_data_iter_sequential(corpus, batch_size, num_steps):
     """使用顺序分区生成一个小批量子序列。"""
     offset = random.randint(0, num_steps)
     num_tokens = ((len(corpus) - offset - 1) // batch_size) * batch_size
@@ -630,7 +629,7 @@ def seq_data_iter_sequential(corpus, batch_size, num_steps):
         Y = Ys[:, i: i + num_steps]
         yield X, Y
 
-class SeqDataLoader:  
+class SeqDataLoader:
     """加载序列数据的迭代器。"""
     def __init__(self, batch_size, num_steps, use_random_iter, max_tokens):
         if use_random_iter:
@@ -642,15 +641,15 @@ class SeqDataLoader:
 
     def __iter__(self):
         return self.data_iter_fn(self.corpus, self.batch_size, self.num_steps)
-    
-def load_data_time_machine(batch_size, num_steps,  
+
+def load_data_time_machine(batch_size, num_steps,
                            use_random_iter=False, max_tokens=10000):
     """返回时光机器数据集的迭代器和词表。"""
     data_iter = SeqDataLoader(
         batch_size, num_steps, use_random_iter, max_tokens)
     return data_iter, data_iter.vocab
 
-def predict_ch8(prefix, num_preds, net, vocab):  
+def predict_ch8(prefix, num_preds, net, vocab):
     """在`prefix`后面生成新字符。"""
     net.set_train(False)
     state = net.begin_state(batch_size=1)
@@ -684,7 +683,7 @@ class NetWithLossCh8(nn.Cell):
         super().__init__()
         self.network = network
         self.loss = loss
-        
+
     def construct(self, *inputs):
         y_hat, state = self.network(*inputs[:-1])
         loss = self.loss(y_hat, inputs[-1])
@@ -704,14 +703,14 @@ def train_ch8(net, train_iter, vocab, lr, num_epochs):
     """训练模型（定义见第8章）。"""
     animator = Animator(xlabel='epoch', ylabel='perplexity',
                             legend=['train'], xlim=[10, num_epochs])
-    
+
     loss = nn.SoftmaxCrossEntropyWithLogits(sparse=True, reduction='mean')
     optim = nn.SGD(net.trainable_params(), lr)
     net_with_loss = NetWithLossCh8(net, loss)
     train = TrainCh8(net_with_loss, optim, 1)
-    
+
     predict = lambda prefix: predict_ch8(prefix, 50, net, vocab)
-    
+
     state = net.begin_state(train_iter.batch_size)
     for epoch in range(num_epochs):
         ppl, speed = train_epoch_ch8(
@@ -719,11 +718,11 @@ def train_ch8(net, train_iter, vocab, lr, num_epochs):
         if (epoch + 1) % 10 == 0:
             print(predict('time traveller'))
             animator.add(epoch + 1, [ppl])
-    
+
     print(f'困惑度 {ppl:.1f}, {speed:.1f} 词元/秒')
     print(predict('time traveller'))
     print(predict('traveller'))
-    
+
 class RNNModel(nn.Cell):
     """循环神经网络模型。"""
     def __init__(self, rnn_layer, vocab_size, num_hiddens, **kwargs):
@@ -739,7 +738,7 @@ class RNNModel(nn.Cell):
             self.linear = nn.Dense(self.num_hiddens * 2, self.vocab_size)
         self.on_value = Tensor(1.0, mindspore.float32)
         self.off_value = Tensor(0.0, mindspore.float32)
-        
+
     def construct(self, inputs, state):
         X = ops.OneHot()(inputs.T, self.vocab_size, self.on_value, self.off_value)
         Y, state = self.rnn(X, state)
@@ -758,7 +757,7 @@ class RNNModel(nn.Cell):
                         self.num_directions * self.rnn.num_layers,
                         batch_size, self.num_hiddens)))
 
-class RNNModelScratch(nn.Cell): 
+class RNNModelScratch(nn.Cell):
     """从零开始实现的循环神经网络模型"""
     def __init__(self, vocab_size, num_hiddens,
                  get_params, init_state, forward_fn):
@@ -768,7 +767,7 @@ class RNNModelScratch(nn.Cell):
         self.init_state, self.forward_fn = init_state, forward_fn
         self.on_value = Tensor(1.0, mindspore.float32)
         self.off_value = Tensor(0.0, mindspore.float32)
-        
+
     def construct(self, X, state):
         X = ops.OneHot()(X.T, self.vocab_size, self.on_value, self.off_value)
         return self.forward_fn(X, state, self.params)
@@ -783,7 +782,7 @@ class Encoder(nn.Cell):
 
     def construct(self, X):
         raise NotImplementedError
-        
+
 class Decoder(nn.Cell):
     """编码器-解码器架构的基本解码器接口"""
     def __init__(self, **kwargs):
@@ -894,7 +893,7 @@ class Seq2SeqEncoder(Encoder):
                           dropout=dropout)
         self.num_hiddens = num_hiddens
         self.num_layers = num_layers
-        
+
     def construct(self, X, X_len=None):
         hx = mnp.zeros((self.num_layers, X.shape[0], self.num_hiddens), mindspore.float32)
         X = self.embedding(X)
@@ -910,7 +909,7 @@ class MaskedSoftmaxCELoss(nn.Cell):
 
     def construct(self, pred, label, valid_len):
         weights = mnp.ones_like(label)
-        weights = sequence_mask(weights, valid_len)        
+        weights = sequence_mask(weights, valid_len)
         unweighted_loss = self.softmax_ce_loss(pred.view(-1, pred.shape[-1]), label.view(-1))
         weighted_loss = (unweighted_loss.view(label.shape) * weights).mean(axis=1)
         return weighted_loss.sum()
@@ -920,12 +919,12 @@ class NetWithLossCh8_Seq2seq(nn.Cell):
         super().__init__()
         self.network = network
         self.loss = loss
-        
+
     def construct(self, *inputs):
         y_hat, state = self.network(*inputs[:-2])
         loss = self.loss(y_hat, inputs[-2], inputs[-1])
         return loss
-    
+
 def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab):
     """训练序列到序列模型"""
 
@@ -950,7 +949,7 @@ def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab):
     print(f'loss {metric[0] / metric[1]:.3f}, {metric[1] / timer.stop():.1f} '
         f'tokens/sec')
 
-def bleu(pred_seq, label_seq, k):  
+def bleu(pred_seq, label_seq, k):
     """计算BLEU"""
     pred_tokens, label_tokens = pred_seq.split(' '), label_seq.split(' ')
     len_pred, len_label = len(pred_tokens), len(label_tokens)
@@ -1102,7 +1101,7 @@ class Dense(nn.Dense):
     def __init__(self, in_channels, out_channels, has_bias=True, activation=None):
         super().__init__(in_channels, out_channels, weight_init='xavier_uniform', bias_init='zeros', has_bias=has_bias, activation=activation)
         self.reset_parameters()
-        
+
     def reset_parameters(self):
         if self.has_bias:
             fan_in, _ = _calculate_fan_in_and_fan_out(self.weight.shape)
@@ -1146,7 +1145,7 @@ def train_transformer(net, data_iter, lr, num_epochs, tgt_vocab):
             animator.add(epoch + 1, (metric[0] / metric[1],))
     print(f'loss {metric[0] / metric[1]:.3f}, {metric[1] / timer.stop():.1f} '
         f'tokens/sec')
-    
+
 def predict_transformer(net, src_sentence, src_vocab, tgt_vocab, num_steps, save_attention_weights=False):
     """序列到序列模型的预测"""
     net.set_train(False)
@@ -1214,6 +1213,18 @@ tanh = ops.tanh
 exp = ops.exp
 meshgrid = ops.meshgrid
 linspace = ops.linspace
+zeros_like = ops.zeros_like
+sqrt = ops.sqrt
+log = ops.log
+maximum = ops.maximum
+relu = ops.relu
+sigmoid = ops.sigmoid
+norm = ops.norm
+pow = lambda x, y: ops.pow(x, y)
+clip_by_value = lambda x, clip_value_min, clip_value_max: ops.clip_by_value(x, clip_value_min, clip_value_max)
+uniform = lambda shape, minval, maxval: ops.uniform(shape, tensor(minval), tensor(maxval), dtype=float32)
+rand = lambda size, *args: ops.rand(size, dtype=float32)
+randn = lambda size, *args: ops.randn(size, dtype=float32)
 tensor = lambda x: mindspore.Tensor(x, dtype=mindspore.float32)
 normal = lambda shape, mean, stddev, *args : ops.normal(shape, tensor(mean), tensor(stddev), *args)
 reduce_sum = lambda x, *args, **kwargs: x.sum(*args, **kwargs)

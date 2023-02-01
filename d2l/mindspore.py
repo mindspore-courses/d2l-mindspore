@@ -399,7 +399,7 @@ def evaluate_accuracy(net, dataset):
         metric.add(accuracy(net(X), y), y.size)
     return metric[0] / metric[1]
 
-def train_epoch_ch3(net, dataset, loss, optim):  #@save
+def train_epoch_ch3(net, dataset, loss, optim):
     """训练模型一个迭代周期（定义见第3章）。"""
     # 定义前向网络
     def forward_fn(x, y):

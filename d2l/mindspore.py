@@ -134,11 +134,11 @@ class ArrayData():
         return len(self.data[0])
 
 class SGD(nn.Cell):
-    def __init__(self, lr, batch_size, params):
+    def __init__(self, lr, batch_size, parameters):
         super().__init__()
         self.lr = lr
         self.batch_size = batch_size
-        self.parameters = params
+        self.parameters = parameters
         
     def construct(self, grads):
         for idx in range(len(self.parameters)):

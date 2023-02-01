@@ -139,7 +139,7 @@ class SGD(nn.Cell):
         self.lr = lr
         self.batch_size = batch_size
         self.parameters = parameters
-        
+
     def construct(self, grads):
         for idx in range(len(self.parameters)):
             ops.assign(self.parameters[idx], self.parameters[idx] - self.lr * grads[idx] / self.batch_size)
@@ -157,6 +157,7 @@ class Train(nn.Cell):
         grads = self.grad(self.network, self.optimizer.parameters)(*inputs)
         loss = ops.depend(loss, self.optimizer(grads))
         return loss
+
 class NetWithLoss(nn.Cell):
     def __init__(self, network, loss):
         super().__init__()
@@ -1240,6 +1241,7 @@ def predict_transformer(net, src_sentence, src_vocab, tgt_vocab, num_steps, save
 
 def train_2d(trainer, steps=20, f_grad=None):
     """Optimize a 2D objective function with a customized trainer.
+
     Defined in :numref:`subsec_gd-learningrate`"""
     # `s1` and `s2` are internal state variables that will be used later
     x1, x2, s1, s2 = -5, -2, 0, 0
@@ -1255,6 +1257,7 @@ def train_2d(trainer, steps=20, f_grad=None):
 
 def show_trace_2d(f, results):
     """Show the trace of 2D variables during optimization.
+
     Defined in :numref:`subsec_gd-learningrate`"""
     d2l.set_figsize()
     d2l.plt.plot(*zip(*results), '-o', color='#ff7f0e')

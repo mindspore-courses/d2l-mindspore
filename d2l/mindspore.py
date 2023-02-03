@@ -310,7 +310,7 @@ def load_array(data_arrays, batch_size, is_train=True):
     Defined in :numref:`sec_utils`"""
     dataset = ArrayData(data_arrays)
     data_column_size = len(data_arrays)
-    
+
     dataset = ds.GeneratorDataset(source=dataset, column_names=[str(i) for i in range(data_column_size)], shuffle=is_train)
     dataset = dataset.batch(batch_size)
     return dataset
@@ -433,15 +433,19 @@ def predict_ch3(net, dataset, n=6):
     titles = [true +'\n' + pred for true, pred in zip(trues, preds)]
     show_images(
         X[0:n].reshape((n, 28, 28)), 1, n, titles=titles[0:n])
-    
-def evaluate_loss(net, loss, dataset):
+
+def evaluate_loss(net, data_iter, loss):
     """Evaluate the loss of a model on the given dataset.
-    Defined in :numref:`sec_utils`"""
-    metric = Accumulator(2)  # Sum of losses, no. of examples
-    for X, y in dataset.create_tuple_iterator():
-        z = net(X)
-        l = loss(z, y)
-        metric.add(l.sum().asnumpy(), l.size)
+
+    Defined in :numref:`sec_model_selection`"""
+    if isinstance(net, nn.Cell):
+        net.set_train(False)
+    metric = d2l.Accumulator(2)  # Sum of losses, no. of examples
+    for X, y in data_iter:
+        out = net(X)
+        y = d2l.reshape(y, out.shape)
+        l = loss(out, y)
+        metric.add(d2l.reduce_sum(l), l.size)
     return metric[0] / metric[1]
 
 def corr2d(X, K):
@@ -601,7 +605,7 @@ def count_corpus(tokens):
         tokens = [token for line in tokens for token in line]
     return collections.Counter(tokens)
 
-def load_corpus_time_machine(max_tokens=-1): 
+def load_corpus_time_machine(max_tokens=-1):
     """返回时光机器数据集的词元索引列表和词表。"""
     lines = read_time_machine()
     tokens = tokenize(lines, 'char')
@@ -874,7 +878,7 @@ def preprocess_nmt(text):
     """预处理“英语－法语”数据集。"""
     def no_space(char, prev_char):
         return char in set(',.!?') and prev_char != ' '
-    
+
     # 使用空格替换不间断空格
     # 使用小写字母替换大写字母
     text = text.replace('\u202f', ' ').replace('\xa0', ' ').lower()
@@ -955,7 +959,7 @@ class MaskedSoftmaxCELoss(nn.Cell):
     def __init__(self):
         super().__init__()
         self.softmax_ce_loss = nn.CrossEntropyLoss()
-    
+
     # pred的形状：(batch_size,num_steps,vocab_size)
     # label的形状：(batch_size,num_steps)
     # valid_len的形状：(batch_size,)
@@ -989,7 +993,7 @@ def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab):
         l = loss(pred, Y, Y_valid_len)
         return l
     grad_fn = ops.value_and_grad(forward_fn, None, optimizer.parameters, has_aux=False)
-    
+
     for epoch in range(num_epochs):
         timer = d2l.Timer()
         metric = d2l.Accumulator(2)  # 训练损失总和，词元数量
@@ -1256,11 +1260,81 @@ def show_trace_2d(f, results):
     Defined in :numref:`subsec_gd-learningrate`"""
     d2l.set_figsize()
     d2l.plt.plot(*zip(*results), '-o', color='#ff7f0e')
-    x1, x2 = d2l.meshgrid((d2l.arange(-5.5, 1.0, 0.1),
-                          d2l.arange(-3.0, 1.0, 0.1)))
+    x1, x2 = d2l.meshgrid(d2l.arange(-5.5, 1.0, 0.1),
+                          d2l.arange(-3.0, 1.0, 0.1))
     d2l.plt.contour(x1, x2, f(x1, x2), colors='#1f77b4')
     d2l.plt.xlabel('x1')
     d2l.plt.ylabel('x2')
+
+d2l.DATA_HUB['airfoil'] = (d2l.DATA_URL + 'airfoil_self_noise.dat',
+                           '76e5be1548fd8222e5074cf0faae75edff8cf93f')
+
+def get_data_ch11(batch_size=10, n=1500):
+    """Defined in :numref:`sec_minibatches`"""
+    data = np.genfromtxt(d2l.download('airfoil'),
+                         dtype=np.float32, delimiter='\t')
+    data = (data - data.mean(axis=0)) / data.std(axis=0)
+    data_iter = d2l.load_array((data[:n, :-1], data[:n, -1]),
+                               batch_size, is_train=True)
+    return data_iter, data.shape[1]-1
+
+def train_ch11(trainer_fn, states, hyperparams, data_iter,
+               feature_dim, num_epochs=2):
+    """Defined in :numref:`sec_minibatches`"""
+    # Initialization
+    w = mindspore.Parameter(d2l.normal(mean=0.0, stddev=0.01, shape=(feature_dim, 1)))
+    b = mindspore.Parameter(d2l.zeros((1)))
+    net, loss = lambda X: d2l.linreg(X, w, b), d2l.squared_loss
+    loss_fn = lambda x, y: loss(net(x), y).mean()
+    grad_fn = mindspore.value_and_grad(loss_fn, None, [w, b])
+    # Train
+    animator = d2l.Animator(xlabel='epoch', ylabel='loss',
+                            xlim=[0, num_epochs], ylim=[0.22, 0.35])
+    n, timer = 0, d2l.Timer()
+    for _ in range(num_epochs):
+        for X, y in data_iter:
+            l, [dw, db] = grad_fn(X, y)
+            trainer_fn([w, b], [dw, db], states, hyperparams)
+            n += X.shape[0]
+            if n % 200 == 0:
+                timer.stop()
+                animator.add(n/X.shape[0]/data_iter.get_dataset_size(),
+                             (d2l.evaluate_loss(net, data_iter, loss),))
+                timer.start()
+    print(f'loss: {animator.Y[0][-1]:.3f}, {timer.avg():.3f} sec/epoch')
+    return timer.cumsum(), animator.Y[0]
+
+def train_concise_ch11(trainer_fn, hyperparams, data_iter, num_epochs=4):
+    """Defined in :numref:`sec_minibatches`"""
+    # Initialization
+    net = nn.Dense(5, 1)
+    def init_weights(m):
+        if type(m) == nn.Dense:
+            m.weight.set_data(initializer(Normal(0.01), m.weight.shape))
+    net.apply(init_weights)
+
+    optimizer = trainer_fn(net.trainable_params(), **hyperparams)
+    loss = nn.MSELoss(reduction='none')
+    forward_fn = lambda X, y: loss(net(X), y).mean()
+
+    # Get gradient function
+    grad_fn = mindspore.value_and_grad(forward_fn, None, net.trainable_params())
+    animator = d2l.Animator(xlabel='epoch', ylabel='loss',
+                            xlim=[0, num_epochs], ylim=[0.22, 0.35])
+    n, timer = 0, d2l.Timer()
+    for _ in range(num_epochs):
+        for X, y in data_iter:
+            output, grads = grad_fn(X, y)
+            optimizer(grads)
+            n += X.shape[0]
+            if n % 200 == 0:
+                timer.stop()
+                # MSELoss计算平方误差时不带系数1/2
+                animator.add(n / X.shape[0] / data_iter.get_dataset_size(),
+                             (d2l.evaluate_loss(net, data_iter, loss) / 2,))
+                timer.start()
+    print(f'loss: {animator.Y[0][-1]:.3f}, {timer.avg():.3f} sec/epoch')
+
 
 def show_list_len_pair_hist(legend, xlabel, ylabel, xlist, ylist):
     """绘制列表长度对的直方图"""
@@ -1281,6 +1355,9 @@ int32 = mindspore.int32
 float32 = mindspore.float32
 ones = ops.ones
 zeros = ops.zeros
+inner = ops.inner
+mv = ops.mv
+mm = ops.mm
 matmul = ops.matmul
 stack = ops.stack
 sin = ops.sin
@@ -1289,10 +1366,12 @@ sinh = ops.sinh
 cosh = ops.cosh
 tanh = ops.tanh
 exp = ops.exp
+square = ops.square
+sqrt = ops.sqrt
+sign = ops.sign
 meshgrid = ops.meshgrid
 linspace = ops.linspace
 zeros_like = ops.zeros_like
-sqrt = ops.sqrt
 log = ops.log
 maximum = ops.maximum
 relu = ops.relu

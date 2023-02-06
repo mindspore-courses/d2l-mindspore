@@ -402,14 +402,18 @@ def evaluate_accuracy(net, dataset):
 
 def train_epoch_ch3(net, dataset, loss, optim):
     """训练模型一个迭代周期（定义见第3章）。"""
-    net_with_loss = nn.WithLossCell(net, loss)
-    net_train = nn.TrainOneStepCell(net_with_loss, optim)
-    metric = Accumulator(3)
+    # 定义前向网络
+    def forward_fn(x, y):
+        y_hat = net(x)
+        l = loss(y_hat, y)
+        return l
     batch_size = dataset.get_batch_size()
-
-    for X, y in dataset.create_tuple_iterator():
-        l = net_train(X, y)
+    metric = Accumulator(3)
+    for X, y in dataset:
+        grad_fn = mindspore.value_and_grad(forward_fn, grad_position=None, weights=optim.parameters)
+        l, grads = grad_fn(X, y)
         y_hat = net(X)
+        optim(grads)
         metric.add(float(l.asnumpy()), accuracy(y_hat, y), y.size)
     return metric[0] / metric[2] * batch_size, metric[1] / metric[2]
 
@@ -417,10 +421,11 @@ def train_ch3(net, train_dataset, test_dataset, loss, num_epochs, optim):
     """训练模型（定义见第3章）。"""
     animator = Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 0.9],
                         legend=['train loss', 'train acc', 'test acc'])
+    net.set_train()
     for epoch in range(num_epochs):
         train_metrics = train_epoch_ch3(net, train_dataset, loss, optim)
-        print(train_metrics)
         test_acc = evaluate_accuracy(net, test_dataset)
+        print(train_metrics)
         animator.add(epoch + 1, train_metrics + (test_acc,))
     train_loss, train_acc = train_metrics
 

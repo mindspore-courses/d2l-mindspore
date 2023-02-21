@@ -14,7 +14,7 @@ import mindspore.numpy as mnp
 import mindspore.nn as nn
 import mindspore.ops as ops
 from mindspore.ops import constexpr
-from mindspore import Tensor
+from mindspore import Tensor, Parameter
 from matplotlib import pyplot as plt
 
 d2l = sys.modules[__name__]
@@ -249,6 +249,9 @@ class MaxPool2d(nn.Cell):
         if self.use_pad:
             x = self.pad(x)
         return self.max_pool(x)
+
+def try_gpu():
+    return None
 
 def linreg(x, w, b):
     return ops.matmul(x, w) + b
@@ -489,13 +492,13 @@ def train_ch6(net, train_dataset, test_dataset, num_epochs, lr):
         loss = loss_fn(y_hat, y)
         return loss, y_hat
     grad_fn = ops.value_and_grad(forward_fn, None, weights=net.trainable_params(), has_aux=True)
-    
+
     # 定义模型单步训练
     def train(X, Y, optim):
         (loss, y_hat), grads = grad_fn(X, Y)
         loss = ops.depend(loss, optim(grads))
         return loss, y_hat
-    
+
     animator = Animator(xlabel='epoch', xlim=[1, num_epochs],
                             legend=['train loss', 'train acc', 'test acc'])
     timer, num_batches = Timer(), train_dataset.get_dataset_size()
@@ -664,7 +667,7 @@ def seq_data_iter_random(corpus, batch_size, num_steps):
         X = [data(j) for j in initial_indices_per_batch]
         Y = [data(j + 1) for j in initial_indices_per_batch]
         yield mindspore.Tensor(X, mindspore.int32), mindspore.Tensor(Y, mindspore.int32)
-        
+
 def seq_data_iter_sequential(corpus, batch_size, num_steps):
     """使用顺序分区生成一个小批量子序列。"""
     # 从随机偏移量开始划分序列
@@ -691,6 +694,7 @@ class SeqDataLoader:
 
     def __iter__(self):
         return self.data_iter_fn(self.corpus, self.batch_size, self.num_steps)
+
 def load_data_time_machine(batch_size, num_steps,
                            use_random_iter=False, max_tokens=10000):
     """返回时光机器数据集的迭代器和词表。"""
@@ -809,7 +813,7 @@ class RNNModel(nn.Cell):
         else:
             self.num_directions = 2
             self.linear = nn.Dense(self.num_hiddens * 2, self.vocab_size)
-        
+
     def construct(self, inputs, state):
         X = ops.one_hot(inputs.T, self.vocab_size, d2l.tensor(1.0), d2l.tensor(0.0))
         Y, state = self.rnn(X, state)
@@ -840,7 +844,7 @@ class RNNModelScratch(nn.Cell):
         self.vocab_size, self.num_hiddens = vocab_size, num_hiddens
         self.params = get_params(vocab_size, num_hiddens)
         self.init_state, self.forward_fn = init_state, forward_fn
-        
+
     def construct(self, X, state):
         X = ops.one_hot(X.T, self.vocab_size, Tensor(1.0, mindspore.float32), Tensor(0.0, mindspore.float32))
         return self.forward_fn(X, state, self.params)
@@ -966,15 +970,15 @@ class Seq2SeqEncoder(d2l.Encoder):
                  dropout=0., **kwargs):
         super(Seq2SeqEncoder, self).__init__(**kwargs)
         # 嵌入层
-        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.embedding = d2l.Embedding(vocab_size, embed_size, embedding_table='normal')
         self.rnn = nn.GRU(embed_size, num_hiddens, num_layers,
                           dropout=dropout)
-        
+
     def construct(self, X, X_len=None):
         # 输出'X'的形状：(batch_size,num_steps,embed_size)
         X = self.embedding(X)
         # 在循环神经网络模型中，第一个轴对应于时间步
-        X = X.permute(1, 0, 2)
+        X = X.transpose(1, 0, 2)
         output, state = self.rnn(X)
         return output, state
 
@@ -990,7 +994,7 @@ class MaskedSoftmaxCELoss(nn.Cell):
     def construct(self, pred, label, valid_len):
         weights = ops.ones_like(label)
         weights = sequence_mask(weights, valid_len)
-        unweighted_loss = self.softmax_ce_loss(pred.permute(0, 2, 1), label)
+        unweighted_loss = self.softmax_ce_loss(pred.transpose(0, 2, 1), label)
         weighted_loss = (unweighted_loss * weights).mean(axis=1)
         return weighted_loss
 
@@ -1005,13 +1009,13 @@ class NetWithLossCh8_Seq2seq(nn.Cell):
         loss = self.loss(y_hat, inputs[-2], inputs[-1])
         return loss
 
-def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab):
+def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab, device=None):
     """训练序列到序列模型"""
 
     optimizer = nn.Adam(net.trainable_params(), lr)
     loss = MaskedSoftmaxCELoss()
     animator = d2l.Animator(xlabel='epoch', ylabel='loss',
-                     xlim=[10, num_epochs])
+                            xlim=[10, num_epochs])
     def forward_fn(X, dec_input, X_valid_len, Y, Y_valid_len):
         pred, _ = net(X, dec_input, X_valid_len)
         l = loss(pred, Y, Y_valid_len)
@@ -1026,7 +1030,7 @@ def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab):
             X, X_valid_len, Y, Y_valid_len = [x.astype(d2l.int32) for x in batch]
             # print(X.shape, X_valid_len, Y.shape, Y_valid_len)
             bos = mindspore.Tensor([tgt_vocab['<bos>']] * Y.shape[0], dtype=mindspore.int32).reshape(-1, 1)
-            dec_input = ops.concat([bos, Y[:, :-1]], 1)  # 强制教学
+            dec_input = d2l.concat([bos, Y[:, :-1]], 1)  # 强制教学
             l, grads = grad_fn(X, dec_input, X_valid_len, Y, Y_valid_len)
             optimizer(grads)
             num_tokens = Y_valid_len.sum()
@@ -1058,14 +1062,14 @@ def predict_seq2seq(net, src_sentence, src_vocab, tgt_vocab, num_steps, save_att
     net.set_train(False)
     src_tokens = src_vocab[src_sentence.lower().split(' ')] + [
         src_vocab['<eos>']]
-    enc_valid_len = mindspore.Tensor([len(src_tokens)])
+    enc_valid_len = mindspore.Tensor([len(src_tokens)], mindspore.int32)
     src_tokens = d2l.truncate_pad(src_tokens, num_steps, src_vocab['<pad>'])
     # 添加批量轴
-    enc_X = ops.unsqueeze(mindspore.Tensor(src_tokens, mindspore.int32), 0)
+    enc_X = d2l.expand_dims(mindspore.Tensor(src_tokens, mindspore.int32), 0)
     enc_outputs = net.encoder(enc_X, enc_valid_len)
     dec_state = net.decoder.init_state(enc_outputs, enc_valid_len)
     # 添加批量轴
-    dec_X = ops.unsqueeze(mindspore.Tensor([tgt_vocab['<bos>']], mindspore.int32), 0)
+    dec_X = d2l.expand_dims(mindspore.Tensor([tgt_vocab['<bos>']], mindspore.int32), 0)
     output_seq, attention_weight_seq = [], []
     for _ in range(num_steps):
         Y, dec_state = net.decoder(dec_X, dec_state)
@@ -1081,7 +1085,7 @@ def predict_seq2seq(net, src_sentence, src_vocab, tgt_vocab, num_steps, save_att
         output_seq.append(pred)
     return ' '.join(tgt_vocab.to_tokens(output_seq)), attention_weight_seq
 
-def sequence_mask(X, valid_len, value=0):
+def sequence_mask(X, valid_len, value=0.):
     """在序列中屏蔽不相关的项"""
     maxlen = X.shape[1]
     mask = ops.arange((maxlen), dtype=mindspore.float32)[None, :] < valid_len[:, None]
@@ -1091,16 +1095,16 @@ def sequence_mask(X, valid_len, value=0):
 def masked_softmax(X, valid_lens):
     """通过在最后一个轴上掩蔽元素来执行 softmax 操作"""
     if valid_lens is None:
-        return ops.Softmax(-1)(X)
+        return nn.Softmax(-1)(X)
     else:
         shape = X.shape
         if valid_lens.ndim == 1:
-            valid_lens = mnp.repeat(valid_lens, shape[1])
+            valid_lens = d2l.repeat(valid_lens, shape[1])
         else:
             valid_lens = valid_lens.reshape(-1)
         X = sequence_mask(X.reshape(-1, shape[-1]), valid_lens,
                               value=-1e6)
-        return ops.Softmax(-1)(X.reshape(shape))
+        return nn.Softmax(-1)(X.reshape(shape))
 
 class AdditiveAttention(nn.Cell):
     """加性注意力"""
@@ -1113,12 +1117,11 @@ class AdditiveAttention(nn.Cell):
 
     def construct(self, queries, keys, values, valid_lens):
         queries, keys = self.W_q(queries), self.W_k(keys)
-        features = mnp.expand_dims(queries, 2) + mnp.expand_dims(keys, 1)
-        features = mnp.tanh(features)
+        features = d2l.expand_dims(queries, 2) + d2l.expand_dims(keys, 1)
+        features = d2l.tanh(features)
         scores = self.w_v(features).squeeze(-1)
-        attention_weights = masked_softmax(scores, valid_lens)
-        outputs = ops.BatchMatMul()(self.dropout(attention_weights), values)
-        return outputs, attention_weights
+        self.attention_weights = masked_softmax(scores, valid_lens)
+        return d2l.bmm(self.dropout(self.attention_weights), values)
 
 class DotProductAttention(nn.Cell):
     """缩放点积注意力"""
@@ -1128,11 +1131,10 @@ class DotProductAttention(nn.Cell):
 
     def construct(self, queries, keys, values, valid_lens=None):
         d = queries.shape[-1]
-        scores = ops.BatchMatMul()(queries, keys.swapaxes(1,2)) / ops.Sqrt()(ops.ScalarToTensor()(d, mindspore.float32))
+        scores = d2l.bmm(queries, keys.swapaxes(1, 2)) / math.sqrt(d)
+        self.attention_weights = masked_softmax(scores, valid_lens)
+        return d2l.bmm(self.dropout(self.attention_weights), values)
 
-        attention_weights = masked_softmax(scores, valid_lens)
-        outputs = ops.BatchMatMul()(self.dropout(attention_weights), values)
-        return outputs, attention_weights
 
 def transpose_qkv(X, num_heads):
     """为了多注意力头的并行计算而变换形状。"""
@@ -1166,29 +1168,53 @@ class MultiHeadAttention(nn.Cell):
         values = transpose_qkv(self.W_v(values), self.num_heads)
 
         if valid_lens is not None:
-            valid_lens = mnp.repeat(
+            valid_lens = d2l.repeat(
                 valid_lens, repeats=self.num_heads, axis=0)
 
-        output, attention_weights = self.attention(queries, keys, values, valid_lens)
+        output = self.attention(queries, keys, values, valid_lens)
 
         output_concat = transpose_output(output, self.num_heads)
-        return self.W_o(output_concat), attention_weights
+        return self.W_o(output_concat)
 
 class PositionalEncoding(nn.Cell):
     """位置编码"""
     def __init__(self, num_hiddens, dropout, max_len=1000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(1 - dropout)
-        self.P = mnp.zeros((1, max_len, num_hiddens))
-        X = mnp.arange(max_len, dtype=mindspore.float32).reshape(
-            -1, 1) / mnp.power(mindspore.Tensor(10000, mindspore.int32), mnp.arange(
+        self.P = d2l.zeros((1, max_len, num_hiddens))
+        X = d2l.arange(max_len, dtype=mindspore.float32).reshape(
+            -1, 1) / d2l.pow(10000, d2l.arange(
             0, num_hiddens, 2, dtype=mindspore.float32) / num_hiddens)
-        self.P[:, :, 0::2] = mnp.sin(X)
-        self.P[:, :, 1::2] = mnp.cos(X)
+        self.P[:, :, 0::2] = d2l.sin(X)
+        self.P[:, :, 1::2] = d2l.cos(X)
 
     def construct(self, X):
         X = X + self.P[:, :X.shape[1], :]
         return self.dropout(X)
+
+
+class LayerNorm(nn.Cell):
+    def __init__(self, normalized_shape, gamma_init='ones', beta_init='zeros', epsilon=1e-05):
+        """Initialize LayerNorm."""
+        super(LayerNorm, self).__init__()
+        if not isinstance(normalized_shape, (tuple, list)):
+            raise TypeError(f"For '{self.cls_name}', the type of 'normalized_shape' should be tuple[int] or list[int], "
+                            f"but got {normalized_shape} and the type is {type(normalized_shape)}.")
+        self.normalized_shape = normalized_shape
+        self.norm_ndim = len(normalized_shape)
+        self.epsilon = epsilon
+        self.gamma = Parameter(initializer(
+            gamma_init, normalized_shape), name="gamma")
+        self.beta = Parameter(initializer(
+            beta_init, normalized_shape), name="beta")
+
+    def construct(self, input_x):
+        layer_norm = ops.LayerNorm(begin_norm_axis=input_x.ndim - self.norm_ndim,
+                                   begin_params_axis=input_x.ndim - self.norm_ndim,
+                                   epsilon=self.epsilon)
+        y, _, _ = layer_norm(input_x, self.gamma, self.beta)
+        return y
+
 
 class Dense(nn.Dense):
     def __init__(self, in_channels, out_channels, has_bias=True, activation=None):
@@ -1533,15 +1559,22 @@ relu = ops.relu
 sigmoid = ops.sigmoid
 norm = ops.norm
 cat = ops.cat
+sort = ops.sort
+expand_dims = ops.expand_dims
+tile = ops.tile
+eye = lambda m: ops.eye(m, m, t=float32)
+numpy = lambda x, *args, **kwargs: x.asnumpy(*args, **kwargs)
 pow = lambda x, y: ops.pow(x, y)
 clip_by_value = lambda x, clip_value_min, clip_value_max: ops.clip_by_value(x, clip_value_min, clip_value_max)
 uniform = lambda shape, minval, maxval: ops.uniform(shape, tensor(minval), tensor(maxval), dtype=float32)
 rand = lambda size, *args: ops.rand(size, dtype=float32)
 randn = lambda size, *args: ops.randn(size, dtype=float32)
-tensor = lambda x: mindspore.Tensor(x, dtype=mindspore.float32)
+tensor = lambda x, *args, **kwargs: mindspore.Tensor(x, *args, **kwargs)
 normal = lambda shape, mean, stddev, *args : ops.normal(shape, tensor(mean), tensor(stddev), *args)
 reduce_sum = lambda x, *args, **kwargs: x.sum(*args, **kwargs)
 reshape = lambda x, *args, **kwargs: x.reshape(*args, **kwargs)
 transpose = lambda x, *args, **kwargs: x.t(*args, **kwargs)
 size = lambda x, *args, **kwargs: x.numel(*args, **kwargs)
 astype = lambda x, *args, **kwargs: x.astype(*args, **kwargs)
+repeat = lambda x, repeats, *args, **kwargs: x.repeat(repeats, *args, **kwargs)
+bmm = lambda x, y: ops.BatchMatMul()(x, y)

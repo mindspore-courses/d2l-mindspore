@@ -1127,6 +1127,14 @@ class DotProductAttention(nn.Cell):
         self.attention_weights = masked_softmax(scores, valid_lens)
         return d2l.bmm(self.dropout(self.attention_weights), values)
 
+class AttentionDecoder(d2l.Decoder):
+    """带有注意力机制解码器的基本接口"""
+    def __init__(self, **kwargs):
+        super(AttentionDecoder, self).__init__(**kwargs)
+
+    @property
+    def attention_weights(self):
+        raise NotImplementedError
 
 def transpose_qkv(X, num_heads):
     """为了多注意力头的并行计算而变换形状。"""
@@ -1184,6 +1192,71 @@ class PositionalEncoding(nn.Cell):
         X = X + self.P[:, :X.shape[1], :]
         return self.dropout(X)
 
+class PositionWiseFFN(nn.Cell):
+    """基于位置的前馈网络"""
+    def __init__(self, ffn_num_input, ffn_num_hiddens, ffn_num_outputs,
+                 **kwargs):
+        super(PositionWiseFFN, self).__init__(**kwargs)
+        self.dense1 = d2l.Dense(ffn_num_input, ffn_num_hiddens)
+        self.relu = nn.ReLU()
+        self.dense2 = d2l.Dense(ffn_num_hiddens, ffn_num_outputs)
+
+    def construct(self, X):
+        return self.dense2(self.relu(self.dense1(X)))
+
+class AddNorm(nn.Cell):
+    """残差连接后进行层规范化。"""
+    def __init__(self, normalized_shape, dropout, **kwargs):
+        super(AddNorm, self).__init__(**kwargs)
+        self.dropout = nn.Dropout(1 - dropout)
+        self.ln = d2l.LayerNorm(normalized_shape)
+
+    def construct(self, X, Y):
+        return self.ln(self.dropout(Y) + X)
+
+class EncoderBlock(nn.Cell):
+    """transformer编码器块。"""
+    def __init__(self, key_size, query_size, value_size, num_hiddens,
+                 norm_shape, ffn_num_input, ffn_num_hiddens, num_heads,
+                 dropout, use_bias=False, **kwargs):
+        super(EncoderBlock, self).__init__(**kwargs)
+        self.attention = d2l.MultiHeadAttention(
+            key_size, query_size, value_size, num_hiddens, num_heads, dropout,
+            use_bias)
+        self.addnorm1 = AddNorm(norm_shape, dropout)
+        self.ffn = PositionWiseFFN(
+            ffn_num_input, ffn_num_hiddens, num_hiddens)
+        self.addnorm2 = AddNorm(norm_shape, dropout)
+
+    def construct(self, X, valid_lens):
+        Y = self.addnorm1(X, self.attention(X, X, X, valid_lens))
+        return self.addnorm2(Y, self.ffn(Y))
+
+class TransformerEncoder(d2l.Encoder):
+    """transformer编码器"""
+    def __init__(self, vocab_size, key_size, query_size, value_size,
+                 num_hiddens, norm_shape, ffn_num_input, ffn_num_hiddens,
+                 num_heads, num_layers, dropout, use_bias=False, **kwargs):
+        super(TransformerEncoder, self).__init__(**kwargs)
+        self.num_hiddens = num_hiddens
+        self.embedding = d2l.Embedding(vocab_size, num_hiddens, embedding_table='normal')
+        self.pos_encoding = d2l.PositionalEncoding(num_hiddens, dropout)
+        self.blks = nn.SequentialCell()
+        for i in range(num_layers):
+            self.blks.append(EncoderBlock(key_size, query_size, value_size, num_hiddens,
+                             norm_shape, ffn_num_input, ffn_num_hiddens,
+                             num_heads, dropout, use_bias))
+
+    def construct(self, X, valid_lens):
+        # 因为位置编码值在-1和1之间，
+        # 因此嵌入值乘以嵌入维度的平方根进行缩放，
+        # 然后再与位置编码相加。
+        X = self.pos_encoding(self.embedding(X) * math.sqrt(self.num_hiddens))
+        self.attention_weights = [None] * len(self.blks)
+        for i, blk in enumerate(self.blks):
+            X = blk(X, valid_lens)
+            self.attention_weights[i] = blk.attention.attention.attention_weights
+        return X
 
 class LayerNorm(nn.Cell):
     def __init__(self, normalized_shape, gamma_init='ones', beta_init='zeros', epsilon=1e-05):

@@ -2,19 +2,19 @@ import os
 import sys
 import re
 import math
-import tarfile
 import time
 import random
 import requests
 import hashlib
 import collections
 import zipfile
+import tarfile
 import mindspore
 import numpy as np
+import pandas as pd
 import mindspore.numpy as mnp
 import mindspore.nn as nn
 import mindspore.ops as ops
-import mindspore.dataset as ds
 from mindspore.ops import constexpr
 from mindspore import Tensor, Parameter
 from matplotlib import pyplot as plt
@@ -334,7 +334,7 @@ def get_fashion_mnist_labels(labels):
 
 
 def load_array(data_arrays, batch_size, is_train=True):
-    """Construct a PyTorch data iterator.
+    """Construct a Mindspore data iterator.
     Defined in :numref:`sec_utils`"""
     dataset = ArrayData(data_arrays)
     data_column_size = len(data_arrays)
@@ -569,58 +569,6 @@ def train_ch6(net, train_dataset, test_dataset, num_epochs, lr):
     print(f'loss {train_l:.3f}, train acc {train_acc:.3f}, '
           f'test acc {test_acc:.3f}')
     print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec')
-def train_batch_ch13(net, X, y, loss_fn, trainer):
-    """Train for a minibatch with mutiple GPUs (defined in Chapter 13).
-
-    Defined in :numref:`sec_image_augmentation`"""
-
-    # 定义前向传播函数
-    def forward_fn(x, y):
-        y_hat = net(x)
-        loss = loss_fn(y_hat, y)
-        return loss.sum(), y_hat
-
-    grad_fn = ops.value_and_grad(forward_fn, None, weights=net.trainable_params(), has_aux=True)
-
-    # 定义模型单步训练
-    def train(X, Y, optim):
-        (loss, pred), grads = grad_fn(X, Y)
-        loss = ops.depend(loss, optim(grads))
-        return loss, pred
-
-    net.set_train(True)
-
-    train_loss_sum, pred = train(X, y, trainer)
-    train_acc_sum = d2l.accuracy(pred, y)
-    return train_loss_sum, train_acc_sum
-
-
-def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs):
-    """Train a model with mutiple GPUs (defined in Chapter 13).
-
-    Defined in :numref:`sec_image_augmentation`"""
-    timer, num_batches = d2l.Timer(), train_iter.get_dataset_size()
-    animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
-                            legend=['train loss', 'train acc', 'test acc'])
-    for epoch in range(num_epochs):
-        # Sum of training loss, sum of training accuracy, no. of examples,
-        # no. of predictions
-        metric = d2l.Accumulator(4)
-        for i, (features, labels) in enumerate(train_iter.create_tuple_iterator()):
-            timer.start()
-            l, acc = train_batch_ch13(
-                net, features, labels, loss, trainer)
-            metric.add(l, acc, labels.shape[0], labels.numel())
-            timer.stop()
-            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
-                animator.add(epoch + (i + 1) / num_batches,
-                             (metric[0] / metric[2], metric[1] / metric[3],
-                              None))
-        test_acc = d2l.evaluate_accuracy_gpu(net, test_iter)
-        animator.add(epoch + 1, (None, None, test_acc))
-    print(f'loss {metric[0] / metric[2]:.3f}, train acc '
-          f'{metric[1] / metric[3]:.3f}, test acc {test_acc:.3f}')
-    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec on ')
 
 
 def evaluate_accuracy_gpu_bert(net, dataset, device=None):
@@ -1833,14 +1781,13 @@ def train_ch11(trainer_fn, states, hyperparams, data_iter,
 def train_concise_ch11(trainer_fn, hyperparams, data_iter, num_epochs=4):
     """Defined in :numref:`sec_minibatches`"""
     # Initialization
-    net = nn.Dense(5, 1)
+    net = nn.SequentialCell(nn.Dense(5, 1))
 
     def init_weights(m):
         if type(m) == nn.Dense:
             m.weight.set_data(initializer(Normal(0.01), m.weight.shape))
-
+    
     net.apply(init_weights)
-
     optimizer = trainer_fn(net.trainable_params(), **hyperparams)
     loss = nn.MSELoss(reduction='none')
     forward_fn = lambda X, y: loss(net(X), y).mean()
@@ -2358,6 +2305,462 @@ def train_bert(train_dataset, net, loss, vocab_size, num_steps):
           f'NSP loss {metric[1] / metric[3]:.3f}')
     print(f'{metric[2] / timer.sum():.1f} sentence pairs/sec on ')
 
+def get_params(img, size):
+    """
+    Get parameters for crop for a random crop.
+
+    Args:
+        img (numpy.ndarray): Image to be cropped.
+        size (tuple): Expected output size of the crop.
+
+    Returns:
+        params (i, j, h, w) to be passed to crop for random crop.
+    """
+    img_height, img_width = img.shape[:2]
+    height, width = size
+    if height > img_height or width > img_width:
+        raise ValueError("Crop size {} is larger than input image size {}.".format(size, (img_height, img_width)))
+
+    if width == img_width and height == img_height:
+        return 0, 0, img_height, img_width
+
+    top = random.randint(0, img_height - height)
+    left = random.randint(0, img_width - width)
+    return top, left, height, width
+
+def crop(img, top, left, height, width):
+    """
+    Crop the input numpy.ndarray.
+
+    Args:
+        img (numpy.ndarray): Image to be cropped. (0,0) denotes the top left corner of the image,
+            in the directions of (width, height).
+        top (int): Vertical component of the top left corner of the crop box.
+        left (int): Horizontal component of the top left corner of the crop box.
+        height (int): Height of the crop box.
+        width (int): Width of the crop box.
+
+    Returns:
+        numpy.ndarray, cropped image.
+    """
+
+    return img[top : top + height, left : left + width ]
+
+class Residual(nn.Cell):
+    """The Residual block of ResNet."""
+    def __init__(self, input_channels, num_channels,
+                 use_1x1conv=False, strides=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(input_channels, num_channels,
+                               kernel_size=3, padding=1, stride=strides, pad_mode='pad', weight_init='xavier_uniform')
+        self.conv2 = nn.Conv2d(num_channels, num_channels,
+                               kernel_size=3, padding=1, pad_mode='pad', weight_init='xavier_uniform')
+        if use_1x1conv:
+            self.conv3 = nn.Conv2d(input_channels, num_channels,
+                                   kernel_size=1, stride=strides, weight_init='xavier_uniform')
+        else:
+            self.conv3 = None
+        self.bn1 = nn.BatchNorm2d(num_channels)
+        self.bn2 = nn.BatchNorm2d(num_channels)
+
+    def construct(self, X):
+        Y = ops.relu(self.bn1(self.conv1(X)))
+        Y = self.bn2(self.conv2(Y))
+        if self.conv3:
+            X = self.conv3(X)
+        Y += X
+        return ops.relu(Y)
+
+def resnet18(num_classes, in_channels=1):
+    """A slightly modified ResNet-18 model.
+
+    Defined in :numref:`sec_multi_gpu_concise`"""
+    def resnet_block(in_channels, out_channels, num_residuals,
+                     first_block=False):
+        blk = []
+        for i in range(num_residuals):
+            if i == 0 and not first_block:
+                blk.append(d2l.Residual(in_channels, out_channels,
+                                        use_1x1conv=True, strides=2))
+            else:
+                blk.append(d2l.Residual(out_channels, out_channels))
+        return nn.SequentialCell(*blk)
+
+    # This model uses a smaller convolution kernel, stride, and padding and
+    # removes the maximum pooling layer
+
+    net = nn.SequentialCell(
+        nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, pad_mode='pad', weight_init='xavier_uniform'),
+        nn.BatchNorm2d(64),
+        nn.ReLU(),
+        resnet_block(64, 64, 2, first_block=True),
+        resnet_block(64, 128, 2),
+        resnet_block(128, 256, 2),
+        resnet_block(256, 512, 2),
+        d2l.AdaptiveAvgPool2d((1, 1)),
+        nn.Flatten(),
+        nn.Dense(512, num_classes, weight_init='xavier_uniform')
+    )
+
+    return net
+
+def train_batch_ch13(train_step, X, y):
+    """用GPU进行小批量训练"""
+    l, pred = train_step(X, y)
+    train_loss_sum = l.sum()
+    train_acc_sum = d2l.accuracy(pred, y)
+    return train_loss_sum, train_acc_sum
+
+def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs):
+    """用GPU进行模型训练"""
+    timer, num_batches = d2l.Timer(), train_iter.get_dataset_size()
+    animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
+                            legend=['train loss', 'train acc', 'test acc'])
+
+    def forward_fn(inputs, targets):
+        logits = net(inputs)
+        l = loss(logits, targets)
+        return l, logits
+
+    grad_fn = mindspore.value_and_grad(forward_fn, None, trainer.parameters, has_aux=True)
+
+    def train_step(inputs, targets):
+        (l, logits), grads = grad_fn(inputs, targets)
+        trainer(grads)
+        return l, logits
+
+    for epoch in range(num_epochs):
+        # 4个维度：储存训练损失，训练准确度，实例数，特点数
+        metric = d2l.Accumulator(4)
+        net.set_train()
+        for i, (features, labels) in enumerate(train_iter):
+            timer.start()
+            l, acc = train_batch_ch13(
+                train_step, features, labels)  # , loss, trainer, devices
+            metric.add(l, acc, labels.shape[0], labels.numel())
+            timer.stop()
+            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
+                animator.add(epoch + (i + 1) / num_batches,
+                             (metric[0] / metric[2], metric[1] / metric[3],
+                              None))
+        test_acc = d2l.evaluate_accuracy_gpu(net, test_iter)
+        animator.add(epoch + 1, (None, None, test_acc))
+    print(f'loss {metric[0] / metric[2]:.3f}, train acc '
+          f'{metric[1] / metric[3]:.3f}, test acc {test_acc:.3f}')
+    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec')
+
+def multibox_prior(data, sizes, ratios):
+    """生成以每个像素为中心具有不同形状的锚框"""
+    in_height, in_width = data.shape[-2:]
+    num_sizes, num_ratios = len(sizes), len(ratios)
+    boxes_per_pixel = (num_sizes + num_ratios - 1)
+    size_tensor = mindspore.Tensor(sizes)
+    ratio_tensor = mindspore.Tensor(ratios)
+
+    # 为了将锚点移动到像素的中心，需要设置偏移量。
+    # 因为一个像素的高为1且宽为1，我们选择偏移我们的中心0.5
+    offset_h, offset_w = 0.5, 0.5
+    steps_h = 1.0 / in_height  # 在y轴上缩放步长
+    steps_w = 1.0 / in_width  # 在x轴上缩放步长
+
+    # 生成锚框的所有中心点
+    center_h = (ops.arange(in_height) + offset_h) * steps_h
+    center_w = (ops.arange(in_width) + offset_w) * steps_w
+    shift_y, shift_x = ops.meshgrid(center_h, center_w, indexing='ij')
+    shift_y, shift_x = shift_y.reshape(-1), shift_x.reshape(-1)
+
+    # 生成“boxes_per_pixel”个高和宽，
+    # 之后用于创建锚框的四角坐标(xmin,xmax,ymin,ymax)
+    w = ops.concat((size_tensor * ops.sqrt(ratio_tensor[0]),
+                   sizes[0] * ops.sqrt(ratio_tensor[1:])))\
+                   * in_height / in_width  # 处理矩形输入
+    h = ops.concat((size_tensor / ops.sqrt(ratio_tensor[0]),
+                   sizes[0] / ops.sqrt(ratio_tensor[1:])))
+    # 除以2来获得半高和半宽
+    anchor_manipulations = ops.tile(ops.stack((-w, -h, w, h)).T,
+                                    (in_height * in_width, 1)) / 2
+    # 每个中心点都将有“boxes_per_pixel”个锚框，
+    # 所以生成含所有锚框中心的网格，重复了“boxes_per_pixel”次
+    out_grid = ops.stack([shift_x, shift_y, shift_x, shift_y],
+                axis=1).repeat_interleave(boxes_per_pixel, dim=0)
+    output = out_grid + anchor_manipulations
+    return output.unsqueeze(0)
+
+def bbox_to_rect(bbox, color):
+    """Convert bounding box to matplotlib format.
+
+    Defined in :numref:`sec_bbox`"""
+    # Convert the bounding box (upper-left x, upper-left y, lower-right x,
+    # lower-right y) format to the matplotlib format: ((upper-left x,
+    # upper-left y), width, height)
+    return d2l.plt.Rectangle(
+        xy=(bbox[0], bbox[1]), width=bbox[2]-bbox[0], height=bbox[3]-bbox[1],
+        fill=False, edgecolor=color, linewidth=2)
+
+def box_corner_to_center(boxes):
+    """从（左上，右下）转换到（中间，宽度，高度）"""
+    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    w = x2 - x1
+    h = y2 - y1
+    boxes = d2l.stack((cx, cy, w, h), axis=-1)
+    return boxes
+
+def box_center_to_corner(boxes):
+    """从（中间，宽度，高度）转换到（左上，右下）"""
+    cx, cy, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    x1 = cx - 0.5 * w
+    y1 = cy - 0.5 * h
+    x2 = cx + 0.5 * w
+    y2 = cy + 0.5 * h
+    boxes = d2l.stack((x1, y1, x2, y2), axis=-1)
+    return boxes
+
+def show_bboxes(axes, bboxes, labels=None, colors=None):
+    """显示所有边界框"""
+    def _make_list(obj, default_values=None):
+        if obj is None:
+            obj = default_values
+        elif not isinstance(obj, (list, tuple)):
+            obj = [obj]
+        return obj
+
+    labels = _make_list(labels)
+    colors = _make_list(colors, ['b', 'g', 'r', 'm', 'c'])
+    for i, bbox in enumerate(bboxes):
+        color = colors[i % len(colors)]
+        rect = bbox_to_rect(bbox.asnumpy(), color)
+        axes.add_patch(rect)
+        if labels and len(labels) > i:
+            text_color = 'k' if color == 'w' else 'w'
+            axes.text(rect.xy[0], rect.xy[1], labels[i],
+                      va='center', ha='center', fontsize=9, color=text_color,
+                      bbox=dict(facecolor=color, lw=0))
+
+def box_iou(boxes1, boxes2):
+    """计算两个锚框或边界框列表中成对的交并比"""
+    box_area = lambda boxes: ((boxes[:, 2] - boxes[:, 0]) *
+                              (boxes[:, 3] - boxes[:, 1]))
+    # boxes1,boxes2,areas1,areas2的形状:
+    # boxes1：(boxes1的数量,4),
+    # boxes2：(boxes2的数量,4),
+    # areas1：(boxes1的数量,),
+    # areas2：(boxes2的数量,)
+    areas1 = box_area(boxes1)
+    areas2 = box_area(boxes2)
+    # inter_upperlefts,inter_lowerrights,inters的形状:
+    # (boxes1的数量,boxes2的数量,2)
+    inter_upperlefts = ops.maximum(boxes1[:, None, :2], boxes2[:, :2])
+    inter_lowerrights = ops.minimum(boxes1[:, None, 2:], boxes2[:, 2:])
+    inters = (inter_lowerrights - inter_upperlefts).clamp(min=0)
+    # inter_areasandunion_areas的形状:(boxes1的数量,boxes2的数量)
+    inter_areas = inters[:, :, 0] * inters[:, :, 1]
+    union_areas = areas1[:, None] + areas2 - inter_areas
+    return inter_areas / union_areas
+
+def assign_anchor_to_bbox(ground_truth, anchors, iou_threshold=0.5):
+    """将最接近的真实边界框分配给锚框"""
+    num_anchors, num_gt_boxes = anchors.shape[0], ground_truth.shape[0]
+    # 位于第i行和第j列的元素x_ij是锚框i和真实边界框j的IoU
+    jaccard = box_iou(anchors, ground_truth)
+    # 对于每个锚框，分配的真实边界框的张量
+    anchors_bbox_map = ops.full((num_anchors,), -1, dtype=mindspore.int64)
+    # 根据阈值，决定是否分配真实边界框
+    indices, max_ious = ops.max(jaccard, axis=1)
+    anc_i = ops.nonzero(max_ious >= iou_threshold).reshape(-1)
+    box_j = ops.masked_select(indices, max_ious >= iou_threshold)
+    anchors_bbox_map[anc_i] = box_j
+    col_discard = ops.full((num_anchors,), -1)
+    row_discard = ops.full((num_gt_boxes,), -1)
+    for _ in range(num_gt_boxes):
+        max_idx = ops.argmax(jaccard)
+        box_idx = (max_idx % num_gt_boxes).long()
+        anc_idx = (max_idx / num_gt_boxes).long()
+        anchors_bbox_map[anc_idx] = box_idx
+        jaccard[:, box_idx] = col_discard
+        jaccard[anc_idx, :] = row_discard
+    return anchors_bbox_map
+
+def offset_boxes(anchors, assigned_bb, eps=1e-6):
+    """对锚框偏移量的转换"""
+    c_anc = d2l.box_corner_to_center(anchors)
+    c_assigned_bb = d2l.box_corner_to_center(assigned_bb)
+    offset_xy = 10 * (c_assigned_bb[:, :2] - c_anc[:, :2]) / c_anc[:, 2:]
+    offset_wh = 5 * ops.log(eps + c_assigned_bb[:, 2:] / c_anc[:, 2:])
+    offset = ops.concat([offset_xy, offset_wh], axis=1)
+    return offset
+
+def multibox_target(anchors, labels):
+    """使用真实边界框标记锚框"""
+    batch_size, anchors = labels.shape[0], anchors.squeeze(0)
+    batch_offset, batch_mask, batch_class_labels = [], [], []
+    num_anchors = anchors.shape[0]
+    for i in range(batch_size):
+        label = labels[i, :, :]
+        anchors_bbox_map = assign_anchor_to_bbox(
+            label[:, 1:], anchors)
+        bbox_mask = ops.tile((anchors_bbox_map >= 0).float().unsqueeze(-1), (1, 4))
+        # 将类标签和分配的边界框坐标初始化为零
+        class_labels = ops.zeros(num_anchors, dtype=mindspore.int32)
+        assigned_bb = ops.zeros((num_anchors, 4), dtype=mindspore.float32)
+        # 使用真实边界框来标记锚框的类别。
+        # 如果一个锚框没有被分配，标记其为背景（值为零）
+        indices_true = ops.nonzero(anchors_bbox_map >= 0)
+        bb_idx = anchors_bbox_map[indices_true]
+        class_labels[indices_true] = label[bb_idx, 0].long() + 1
+        assigned_bb[indices_true] = label[bb_idx, 1:]
+        # 偏移量转换
+        offset = offset_boxes(anchors, assigned_bb) * bbox_mask
+        batch_offset.append(offset.reshape(-1))
+        batch_mask.append(bbox_mask.reshape(-1))
+        batch_class_labels.append(class_labels)
+    bbox_offset = ops.stack(batch_offset)
+    bbox_mask = ops.stack(batch_mask)
+    class_labels = ops.stack(batch_class_labels)
+    return (bbox_offset, bbox_mask, class_labels)
+
+d2l.DATA_HUB['banana-detection'] = (d2l.DATA_URL + 'banana-detection.zip',
+                                    '5de26c8fce5ccdea9f91267273464dc968d20d72')
+
+def read_data_bananas(is_train=True):
+    """读取香蕉检测数据集中的图像和标签"""
+    data_dir = d2l.download_extract('banana-detection')
+    csv_fname = os.path.join(data_dir, 'bananas_train' if is_train else 'bananas_val', 'label.csv')
+    csv_data = pd.read_csv(csv_fname)
+    csv_data = csv_data.set_index('img_name')
+    images, targets = [], []
+    for img_name, target in csv_data.iterrows():
+        images.append(ds.vision.read_image(
+            os.path.join(data_dir, 'bananas_train' if is_train else'bananas_val', 'images', f'{img_name}')))
+        # 这里的target包含（类别，左上角x，左上角y，右下角x，右下角y），
+        # 其中所有图像都具有相同的香蕉类（索引为0）
+        targets.append(list(target))
+    return images, mindspore.Tensor(targets, dtype=mindspore.float32).unsqueeze(1) / 255
+
+class BananasDataset():
+    """一个用于加载香蕉检测数据集的自定义数据集"""
+    def __init__(self, is_train):
+        self.parent = None
+        self.features, self.labels = read_data_bananas(is_train)
+        print('read ' + str(len(self.features)) + (f' training examples' if
+              is_train else f' validation examples'))
+
+    def __getitem__(self, idx):
+        return (np.array(self.features[int(idx)], dtype='float32'), self.labels[int(idx)])
+
+    def __len__(self):
+        return len(self.features)
+
+def load_data_bananas(batch_size):
+    """加载香蕉检测数据集"""
+    train_iter = ds.GeneratorDataset(source=BananasDataset(is_train=True),
+                                     column_names=['imgs', 'labels'], shuffle=True)
+    val_iter = ds.GeneratorDataset(source=BananasDataset(is_train=False),
+                                     column_names=['imgs', 'labels'], shuffle=False)
+    train_iter = train_iter.map(mindspore.dataset.vision.HWC2CHW(),input_columns='imgs')
+    train_iter = train_iter.batch(batch_size=batch_size, drop_remainder=True)
+    val_iter = val_iter.map(mindspore.dataset.vision.HWC2CHW(),input_columns='imgs')
+    val_iter = val_iter.batch(batch_size=batch_size, drop_remainder=True)
+    return train_iter, val_iter
+
+
+d2l.DATA_HUB['voc2012'] = (d2l.DATA_URL + 'VOCtrainval_11-May-2012.tar',
+                           '4e443f8a2eca6b1dac8a6c57641b67dd40621a49')
+
+def read_voc_images(voc_dir, is_train=True):
+    """读取所有VOC图像并标注"""
+    txt_fname = os.path.join(voc_dir, 'ImageSets', 'Segmentation',
+                             'train.txt' if is_train else 'val.txt')
+    mode = mindspore.dataset.vision.ImageReadMode.COLOR
+    with open(txt_fname, 'r') as f:
+        images = f.read().split()
+    features, labels = [], []
+    for i, fname in enumerate(images):
+        features.append(mindspore.dataset.vision.read_image(os.path.join( # read as numpy.ndarray
+            voc_dir, 'JPEGImages', f'{fname}.jpg')))
+        labels.append(mindspore.dataset.vision.read_image(os.path.join(
+            voc_dir, 'SegmentationClass' ,f'{fname}.png'), mode))
+    return features, labels
+
+VOC_COLORMAP = [[0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
+                [0, 0, 128], [128, 0, 128], [0, 128, 128], [128, 128, 128],
+                [64, 0, 0], [192, 0, 0], [64, 128, 0], [192, 128, 0],
+                [64, 0, 128], [192, 0, 128], [64, 128, 128], [192, 128, 128],
+                [0, 64, 0], [128, 64, 0], [0, 192, 0], [128, 192, 0],
+                [0, 64, 128]]
+
+VOC_CLASSES = ['background', 'aeroplane', 'bicycle', 'bird', 'boat',
+               'bottle', 'bus', 'car', 'cat', 'chair', 'cow',
+               'diningtable', 'dog', 'horse', 'motorbike', 'person',
+               'potted plant', 'sheep', 'sofa', 'train', 'tv/monitor']
+
+def voc_colormap2label():
+    """构建从RGB到VOC类别索引的映射"""
+    colormap2label = np.zeros(256 ** 3, dtype=np.int64)
+    for i, colormap in enumerate(VOC_COLORMAP):
+        colormap2label[
+            (colormap[0] * 256 + colormap[1]) * 256 + colormap[2]] = i
+    return colormap2label
+
+def voc_label_indices(colormap, colormap2label):
+    """将VOC标签中的RGB值映射到它们的类别索引"""
+    colormap = colormap.astype('int32')
+    idx = ((colormap[:, :, 0] * 256 + colormap[:, :, 1]) * 256
+           + colormap[:, :, 2])
+    return colormap2label[idx]
+
+def voc_rand_crop(feature, label, height, width):
+    """随机裁剪特征和标签图像"""
+    rect = d2l.get_params(feature, (height, width))
+    feature = d2l.crop(feature, *rect)
+    label = d2l.crop(label, *rect)
+    return feature, label
+
+class VOCSegDataset():
+    """一个用于加载VOC数据集的自定义数据集"""
+
+    def __init__(self, is_train, crop_size, voc_dir):
+        self.transform = mindspore.dataset.vision.Normalize(
+            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        self.crop_size = crop_size
+        features, labels = read_voc_images(voc_dir, is_train=is_train)
+        self.features = [self.normalize_image(feature)
+                         for feature in self.filter(features)]
+        self.labels = self.filter(labels)
+        self.colormap2label = voc_colormap2label()
+        print('read ' + str(len(self.features)) + ' examples')
+
+    def normalize_image(self, img):
+        return self.transform(img.astype('float32') / 255)
+
+    def filter(self, imgs):
+        return [img for img in imgs if (
+            img.shape[0] >= self.crop_size[0] and
+            img.shape[1] >= self.crop_size[1])]
+
+    def __getitem__(self, idx):
+        feature, label = voc_rand_crop(self.features[idx], self.labels[idx],
+                                       *self.crop_size)
+        return (feature, voc_label_indices(label, self.colormap2label))
+
+    def __len__(self):
+        return len(self.features)
+
+def load_data_voc(batch_size, crop_size):
+    """加载VOC语义分割数据集"""
+    voc_dir = d2l.download_extract('voc2012', os.path.join(
+        'VOCdevkit', 'VOC2012'))
+    num_workers = d2l.get_dataloader_workers()
+    train_iter = mindspore.dataset.GeneratorDataset(VOCSegDataset(True, crop_size, voc_dir), column_names=["data", "label"],
+                                                    shuffle=True, num_parallel_workers =num_workers)
+    train_iter = train_iter.map(mindspore.dataset.vision.HWC2CHW())
+    train_iter = train_iter.batch(batch_size=batch_size, drop_remainder=True)
+    test_iter = mindspore.dataset.GeneratorDataset(VOCSegDataset(False, crop_size, voc_dir), column_names=["data", "label"],
+                                                   shuffle=True, num_parallel_workers =num_workers)
+    test_iter = test_iter.map(mindspore.dataset.vision.HWC2CHW())
+    test_iter = test_iter.batch(batch_size=batch_size, drop_remainder=True)
+    return train_iter, test_iter
 
 def show_list_len_pair_hist(legend, xlabel, ylabel, xlist, ylist):
     """绘制列表长度对的直方图"""
@@ -2370,11 +2773,11 @@ def show_list_len_pair_hist(legend, xlabel, ylabel, xlist, ylist):
         patch.set_hatch('/')
     d2l.plt.legend(legend)
 
-
 abs = ops.abs
 arange = ops.arange
 randn = ops.randn
 concat = ops.concat
+flatten = ops.flatten
 int32 = mindspore.int32
 float32 = mindspore.float32
 ones = ops.ones
@@ -2397,6 +2800,7 @@ meshgrid = ops.meshgrid
 linspace = ops.linspace
 zeros_like = ops.zeros_like
 log = ops.log
+tensor_dot = ops.tensor_dot
 maximum = ops.maximum
 relu = ops.relu
 sigmoid = ops.sigmoid

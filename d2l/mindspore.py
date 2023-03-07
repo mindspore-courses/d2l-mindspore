@@ -569,58 +569,6 @@ def train_ch6(net, train_dataset, test_dataset, num_epochs, lr):
     print(f'loss {train_l:.3f}, train acc {train_acc:.3f}, '
           f'test acc {test_acc:.3f}')
     print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec')
-def train_batch_ch13(net, X, y, loss_fn, trainer):
-    """Train for a minibatch with mutiple GPUs (defined in Chapter 13).
-
-    Defined in :numref:`sec_image_augmentation`"""
-
-    # 定义前向传播函数
-    def forward_fn(x, y):
-        y_hat = net(x)
-        loss = loss_fn(y_hat, y)
-        return loss.sum(), y_hat
-
-    grad_fn = ops.value_and_grad(forward_fn, None, weights=net.trainable_params(), has_aux=True)
-
-    # 定义模型单步训练
-    def train(X, Y, optim):
-        (loss, pred), grads = grad_fn(X, Y)
-        loss = ops.depend(loss, optim(grads))
-        return loss, pred
-
-    net.set_train(True)
-
-    train_loss_sum, pred = train(X, y, trainer)
-    train_acc_sum = d2l.accuracy(pred, y)
-    return train_loss_sum, train_acc_sum
-
-
-def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs):
-    """Train a model with mutiple GPUs (defined in Chapter 13).
-
-    Defined in :numref:`sec_image_augmentation`"""
-    timer, num_batches = d2l.Timer(), train_iter.get_dataset_size()
-    animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
-                            legend=['train loss', 'train acc', 'test acc'])
-    for epoch in range(num_epochs):
-        # Sum of training loss, sum of training accuracy, no. of examples,
-        # no. of predictions
-        metric = d2l.Accumulator(4)
-        for i, (features, labels) in enumerate(train_iter.create_tuple_iterator()):
-            timer.start()
-            l, acc = train_batch_ch13(
-                net, features, labels, loss, trainer)
-            metric.add(l, acc, labels.shape[0], labels.numel())
-            timer.stop()
-            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
-                animator.add(epoch + (i + 1) / num_batches,
-                             (metric[0] / metric[2], metric[1] / metric[3],
-                              None))
-        test_acc = d2l.evaluate_accuracy_gpu(net, test_iter)
-        animator.add(epoch + 1, (None, None, test_acc))
-    print(f'loss {metric[0] / metric[2]:.3f}, train acc '
-          f'{metric[1] / metric[3]:.3f}, test acc {test_acc:.3f}')
-    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec on ')
 
 
 def evaluate_accuracy_gpu_bert(net, dataset, device=None):
@@ -632,32 +580,44 @@ def evaluate_accuracy_gpu_bert(net, dataset, device=None):
     return metric[0] / metric[1]
 
 
-def train_ch13_bert(net, train_iter, test_iter, loss, trainer, num_epochs):
-    """Train a model with mutiple GPUs (defined in Chapter 13).
-
-    Defined in :numref:`sec_image_augmentation`"""
+def train_ch15_bert(net, train_iter, test_iter, loss, trainer, num_epochs):
+    """用多GPU进行模型训练"""
     timer, num_batches = d2l.Timer(), train_iter.get_dataset_size()
     animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
                             legend=['train loss', 'train acc', 'test acc'])
+
+    def forward_fn(inputs, targets):
+        logits = net(inputs)
+        l = loss(logits, targets)
+        return l, logits
+
+    grad_fn = mindspore.value_and_grad(forward_fn, None, trainer.parameters, has_aux=True)
+
+    def train_step(inputs, targets):
+        (l, logits), grads = grad_fn(inputs, targets)
+        trainer(grads)
+        return l, logits
+
     for epoch in range(num_epochs):
-        # Sum of training loss, sum of training accuracy, no. of examples,
-        # no. of predictions
+        # 4个维度：储存训练损失，训练准确度，实例数，特点数
         metric = d2l.Accumulator(4)
+        net.set_train()
         for i, (features1, features2, features3, labels) in enumerate(train_iter.create_tuple_iterator()):
             timer.start()
             l, acc = train_batch_ch13(
-                net, (features1, features2, features3), labels, loss, trainer)
+                train_step, (features1, features2, features3), labels)
             metric.add(l, acc, labels.shape[0], labels.numel())
             timer.stop()
             if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
                 animator.add(epoch + (i + 1) / num_batches,
                              (metric[0] / metric[2], metric[1] / metric[3],
                               None))
-        test_acc = d2l.evaluate_accuracy_gpu_bert(net, test_iter)
+        test_acc = d2l.evaluate_accuracy_gpu(net, test_iter)
         animator.add(epoch + 1, (None, None, test_acc))
     print(f'loss {metric[0] / metric[2]:.3f}, train acc '
           f'{metric[1] / metric[3]:.3f}, test acc {test_acc:.3f}')
-    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec on ')
+    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec on '
+          f'{str(mindspore.get_context("device_target"))}')
 
 
 def predict_sentiment(net, vocab, sequence):
@@ -665,6 +625,7 @@ def predict_sentiment(net, vocab, sequence):
     sequence = Tensor(vocab[sequence.split()], mindspore.int32)
     label = ops.argmax(net(sequence.reshape((1, -1))), axis=1)
     return 'positive' if label == 1 else 'negative'
+
 
 def download(name, cache_dir=os.path.join('..', 'data')):
     """下载一个DATA_HUB中的文件，返回本地文件名。
@@ -1599,6 +1560,54 @@ def train_2d(trainer, steps=20, f_grad=None):
         results.append((x1, x2))
     print(f'epoch {i + 1}, x1: {float(x1):f}, x2: {float(x2):f}')
     return results
+
+
+def train_batch_ch13(train_step, X, y):
+    """用多GPU进行小批量训练"""
+    l, pred = train_step(X, y)
+    train_loss_sum = l.sum()
+    train_acc_sum = d2l.accuracy(pred, y)
+    return train_loss_sum, train_acc_sum
+
+
+def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs):
+    """用多GPU进行模型训练"""
+    timer, num_batches = d2l.Timer(), train_iter.get_dataset_size()
+    animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
+                            legend=['train loss', 'train acc', 'test acc'])
+
+    def forward_fn(inputs, targets):
+        logits = net(inputs)
+        l = loss(logits, targets)
+        return l, logits
+
+    grad_fn = mindspore.value_and_grad(forward_fn, None, trainer.parameters, has_aux=True)
+
+    def train_step(inputs, targets):
+        (l, logits), grads = grad_fn(inputs, targets)
+        trainer(grads)
+        return l, logits
+
+    for epoch in range(num_epochs):
+        # 4个维度：储存训练损失，训练准确度，实例数，特点数
+        metric = d2l.Accumulator(4)
+        net.set_train()
+        for i, (features, labels) in enumerate(train_iter):
+            timer.start()
+            l, acc = train_batch_ch13(
+                train_step, features, labels)
+            metric.add(l, acc, labels.shape[0], labels.numel())
+            timer.stop()
+            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
+                animator.add(epoch + (i + 1) / num_batches,
+                             (metric[0] / metric[2], metric[1] / metric[3],
+                              None))
+        test_acc = d2l.evaluate_accuracy_gpu(net, test_iter)
+        animator.add(epoch + 1, (None, None, test_acc))
+    print(f'loss {metric[0] / metric[2]:.3f}, train acc '
+          f'{metric[1] / metric[3]:.3f}, test acc {test_acc:.3f}')
+    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec on '
+          f'{str(mindspore.get_context("device_target"))}')
 
 
 def show_trace_2d(f, results):

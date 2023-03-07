@@ -1271,6 +1271,16 @@ def masked_softmax(X, valid_lens):
         return nn.Softmax(-1)(X.reshape(shape))
 
 
+def init_cells(net):
+    for _, cell in net.cells_and_names():
+        if isinstance(cell, (nn.Conv2d, nn.Dense)):
+            cell.weight.set_data(initializer(HeUniform(math.sqrt(5)), cell.weight.shape))
+            if cell.has_bias:
+                fan_in, _ = _calculate_fan_in_and_fan_out(cell.weight.shape)
+                bound = 1 / math.sqrt(fan_in)
+                cell.bias.set_data(initializer(Uniform(bound), [cell.out_channels]))
+
+
 class AdditiveAttention(nn.Cell):
     """加性注意力"""
 
@@ -2892,7 +2902,7 @@ def reorg_test(data_dir):
                  os.path.join(data_dir, 'train_valid_test', 'test',
                               'unknown'))
 class RoiPooling():
-  """for fast R-CNN"""
+    """for fast R-CNN"""
     def __init__(self, mode='tf', pool_size=(7,7)):
         """
         tf: (height, width, channels)

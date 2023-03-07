@@ -9,6 +9,7 @@ import hashlib
 import collections
 import zipfile
 import tarfile
+import shutil
 import mindspore
 import numpy as np
 import pandas as pd
@@ -31,9 +32,16 @@ from mindspore.common.initializer import initializer, HeUniform, Uniform, Normal
 DATA_HUB = dict()
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
 DATA_HUB['time_machine'] = (DATA_URL + 'timemachine.txt',
-                            '090b5e7e70c295757f55df93cb0a180b9691891a')
+                                '090b5e7e70c295757f55df93cb0a180b9691891a')
 DATA_HUB['fra-eng'] = (DATA_URL + 'fra-eng.zip',
-                       '94646ad1522d915e7b0f9296181140edcf86a4f5')
+                           '94646ad1522d915e7b0f9296181140edcf86a4f5')
+DATA_HUB['banana-detection'] = (DATA_URL + 'banana-detection.zip',
+                                    '5de26c8fce5ccdea9f91267273464dc968d20d72')
+DATA_HUB['dog_tiny'] = (d2l.DATA_URL + 'kaggle_dog_tiny.zip',
+                            '0cb91d09b814ecdc07b50f31f8dcad3e81d6a86d')
+DATA_HUB['hotdog'] = (d2l.DATA_URL + 'hotdog.zip',
+                         'fba480ffa8aa7e0febbb511d181409f899b9baa5')
+
 
 
 class Timer:
@@ -2833,6 +2841,145 @@ def show_list_len_pair_hist(legend, xlabel, ylabel, xlist, ylist):
     for patch in patches[1].patches:
         patch.set_hatch('/')
     d2l.plt.legend(legend)
+
+def copyfile(filename, target_dir):
+    """Copy a file into a target directory.
+
+    Defined in :numref:`sec_kaggle_cifar10`"""
+    os.makedirs(target_dir, exist_ok=True)
+    shutil.copy(filename, target_dir)
+    
+def read_csv_labels(fname):
+    """Read `fname` to return a filename to label dictionary.
+
+    Defined in :numref:`sec_kaggle_cifar10`"""
+    with open(fname, 'r') as f:
+        # Skip the file header line (column name)
+        lines = f.readlines()[1:]
+    tokens = [l.rstrip().split(',') for l in lines]
+    return dict(((name, label) for name, label in tokens))
+
+def reorg_train_valid(data_dir, labels, valid_ratio):
+    """Split the validation set out of the original training set.
+
+    Defined in :numref:`sec_kaggle_cifar10`"""
+    # The number of examples of the class that has the fewest examples in the
+    # training dataset
+    n = collections.Counter(labels.values()).most_common()[-1][1]
+    # The number of examples per class for the validation set
+    n_valid_per_label = max(1, math.floor(n * valid_ratio))
+    label_count = {}
+    for train_file in os.listdir(os.path.join(data_dir, 'train')):
+        label = labels[train_file.split('.')[0]]
+        fname = os.path.join(data_dir, 'train', train_file)
+        copyfile(fname, os.path.join(data_dir, 'train_valid_test',
+                                     'train_valid', label))
+        if label not in label_count or label_count[label] < n_valid_per_label:
+            copyfile(fname, os.path.join(data_dir, 'train_valid_test',
+                                         'valid', label))
+            label_count[label] = label_count.get(label, 0) + 1
+        else:
+            copyfile(fname, os.path.join(data_dir, 'train_valid_test',
+                                         'train', label))
+    return n_valid_per_label
+
+def reorg_test(data_dir):
+    """Organize the testing set for data loading during prediction.
+
+    Defined in :numref:`sec_kaggle_cifar10`"""
+    for test_file in os.listdir(os.path.join(data_dir, 'test')):
+        copyfile(os.path.join(data_dir, 'test', test_file),
+                 os.path.join(data_dir, 'train_valid_test', 'test',
+                              'unknown'))
+class RoiPooling():
+  """for fast R-CNN"""
+    def __init__(self, mode='tf', pool_size=(7,7)):
+        """
+        tf: (height, width, channels)
+        th: (channels, height, width)
+        :param mode:
+        :param pool_size:
+        """
+        self.mode = mode
+        self.pool_size = pool_size
+
+    def pool(self, region):
+        """
+        the pooling of a region
+        :param region: the region of interest fetched from feature map
+        :return: roipool with size of (1, height, width, channel) if mode is tf otherwise (1, channels, height, width)
+        """
+
+        pool_height, pool_width = self.pool_size
+        if self.mode == 'tf':
+            region_height, region_width, region_channels = region.shape
+            pool = np.zeros((pool_height, pool_width, region_channels))
+        elif self.mode== 'th':
+            region_channels, region_height, region_width = region.shape
+            pool = np.zeros((region_channels, pool_height, pool_width))
+        h_step = int(region_height / pool_height)
+        w_step = int(region_width / pool_width)
+        for i in range(pool_height):
+            for j in range(pool_width):
+
+                xmin = j * w_step
+                xmax = xmin + 1
+                ymin = i * h_step
+                ymax = ymin + 1
+
+                xmin = int(xmin)
+                xmax = int(xmax)
+                ymin = int(ymin)
+                ymax = int(ymax)
+
+                if xmin==xmax or ymin==ymax:
+                    continue
+                if self.mode=='tf':
+                    pool[i, j, :] = np.max(region[ymin:ymax, xmin:xmax, :], axis=(0,1))
+                elif self.mode=='th':
+                    region_new = region[:, ymin:ymax+1, xmin:xmax+1]
+                    pool[:, i, j] = np.max(np.array(region_new), axis=(1,2))
+
+        return pool
+
+    def get_region(self, feature_map, roi_dimensions):
+        """
+        fetching the roi from feature map by the dimension of the roi
+        :param feature_map: the feature map with size of (1, height, width, channels)
+        :param roi_dimensions: a region of interest dimensions
+        :return:
+        """
+        xmin, ymin, xmax, ymax = roi_dimensions
+        xmin = int(xmin)
+        ymin = int(ymin)
+        xmax = int(xmax)
+        ymax = int(ymax)
+        if self.mode=='tf':
+            feature_map = np.squeeze(feature_map)
+            if feature_map.shape == 2:
+                feature_map = feature_map.unsqueeze(0)
+            r = feature_map[ymin:ymax, xmin:xmax, :]
+        elif self.mode=='th':
+            feature_map = np.squeeze(feature_map)
+            if len(feature_map.shape) == 2:
+                feature_map = feature_map.unsqueeze(0)
+            r = feature_map[:, ymin:ymax+1, xmin:xmax+1]
+        return r
+
+    def get_pooled_rois(self,feature_map, roi_batch):
+        """
+        getting pools from the roi batch
+        :param feature_map:
+        :param roi_batch: region of interest batch (usually is 256 for faster rcnn)
+        :return:
+        """
+        pool = []
+        for region_dim in roi_batch:
+            region = self.get_region(feature_map, region_dim)
+            p = self.pool(region)
+            pool.append(p)
+        return np.array(pool)
+    
 
 abs = ops.abs
 arange = ops.arange

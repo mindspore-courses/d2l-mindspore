@@ -27,7 +27,7 @@ from PIL import Image
 import mindspore.dataset.vision as vision
 import mindspore.dataset.transforms as transforms
 import mindspore.dataset as ds
-from mindspore.common.initializer import initializer, HeUniform, Uniform, Normal, _calculate_fan_in_and_fan_out
+from mindspore.common.initializer import initializer, XavierUniform, Uniform, Normal, _calculate_fan_in_and_fan_out
 
 DATA_HUB = dict()
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
@@ -539,6 +539,8 @@ def evaluate_accuracy_gpu(net, dataset, device=None):
 
 def train_ch6(net, train_dataset, test_dataset, num_epochs, lr):
     """用GPU训练模型(在第六章定义)。"""
+    init_cells(net=net)
+
     optim = nn.SGD(net.trainable_params(), learning_rate=lr)
     loss_fn = nn.SoftmaxCrossEntropyWithLogits(sparse=True, reduction='mean')
 
@@ -1274,7 +1276,7 @@ def masked_softmax(X, valid_lens):
 def init_cells(net):
     for _, cell in net.cells_and_names():
         if isinstance(cell, (nn.Conv2d, nn.Dense)):
-            cell.weight.set_data(initializer(HeUniform(math.sqrt(5)), cell.weight.shape))
+            cell.weight.set_data(initializer(XavierUniform(), cell.weight.shape))
             if cell.has_bias:
                 fan_in, _ = _calculate_fan_in_and_fan_out(cell.weight.shape)
                 bound = 1 / math.sqrt(fan_in)

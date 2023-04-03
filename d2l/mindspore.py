@@ -2485,50 +2485,6 @@ def resnet18(num_classes, in_channels=1):
 
     return net
 
-def train_batch_ch13(train_step, X, y):
-    """用GPU进行小批量训练"""
-    l, pred = train_step(X, y)
-    train_loss_sum = l.sum()
-    train_acc_sum = d2l.accuracy(pred, y)
-    return train_loss_sum, train_acc_sum
-
-def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs):
-    """用GPU进行模型训练"""
-    timer, num_batches = d2l.Timer(), train_iter.get_dataset_size()
-    animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
-                            legend=['train loss', 'train acc', 'test acc'])
-
-    def forward_fn(inputs, targets):
-        logits = net(inputs)
-        l = loss(logits, targets)
-        return l, logits
-
-    grad_fn = mindspore.value_and_grad(forward_fn, None, trainer.parameters, has_aux=True)
-
-    def train_step(inputs, targets):
-        (l, logits), grads = grad_fn(inputs, targets)
-        trainer(grads)
-        return l, logits
-
-    for epoch in range(num_epochs):
-        # 4个维度：储存训练损失，训练准确度，实例数，特点数
-        metric = d2l.Accumulator(4)
-        net.set_train()
-        for i, (features, labels) in enumerate(train_iter):
-            timer.start()
-            l, acc = train_batch_ch13(
-                train_step, features, labels)  # , loss, trainer, devices
-            metric.add(l, acc, labels.shape[0], labels.numel())
-            timer.stop()
-            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
-                animator.add(epoch + (i + 1) / num_batches,
-                             (metric[0] / metric[2], metric[1] / metric[3],
-                              None))
-        test_acc = d2l.evaluate_accuracy_gpu(net, test_iter)
-        animator.add(epoch + 1, (None, None, test_acc))
-    print(f'loss {metric[0] / metric[2]:.3f}, train acc '
-          f'{metric[1] / metric[3]:.3f}, test acc {test_acc:.3f}')
-    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec')
 
 def multibox_prior(data, sizes, ratios):
     """生成以每个像素为中心具有不同形状的锚框"""
@@ -2648,7 +2604,7 @@ def assign_anchor_to_bbox(ground_truth, anchors, iou_threshold=0.5):
     # 对于每个锚框，分配的真实边界框的张量
     anchors_bbox_map = ops.full((num_anchors,), -1, dtype=mindspore.int64)
     # 根据阈值，决定是否分配真实边界框
-    indices, max_ious = ops.max(jaccard, axis=1)
+    max_ious, indices  = ops.max(jaccard, axis=1)
     anc_i = ops.nonzero(max_ious >= iou_threshold).reshape(-1)
     box_j = ops.masked_select(indices, max_ious >= iou_threshold)
     anchors_bbox_map[anc_i] = box_j
@@ -2683,14 +2639,14 @@ def multibox_target(anchors, labels):
             label[:, 1:], anchors)
         bbox_mask = ops.tile((anchors_bbox_map >= 0).float().unsqueeze(-1), (1, 4))
         # 将类标签和分配的边界框坐标初始化为零
-        class_labels = ops.zeros(num_anchors, dtype=mindspore.int32)
+        class_labels = ops.zeros(num_anchors, dtype=mindspore.int64)
         assigned_bb = ops.zeros((num_anchors, 4), dtype=mindspore.float32)
         # 使用真实边界框来标记锚框的类别。
         # 如果一个锚框没有被分配，标记其为背景（值为零）
         indices_true = ops.nonzero(anchors_bbox_map >= 0)
         bb_idx = anchors_bbox_map[indices_true]
-        class_labels[indices_true] = label[bb_idx, 0].long() + 1
-        assigned_bb[indices_true] = label[bb_idx, 1:]
+        class_labels[indices_true] = label[:, 0][bb_idx].long() + 1
+        assigned_bb[indices_true] = label[:, 1:][bb_idx]
         # 偏移量转换
         offset = offset_boxes(anchors, assigned_bb) * bbox_mask
         batch_offset.append(offset.reshape(-1))
@@ -2698,7 +2654,7 @@ def multibox_target(anchors, labels):
         batch_class_labels.append(class_labels)
     bbox_offset = ops.stack(batch_offset)
     bbox_mask = ops.stack(batch_mask)
-    class_labels = ops.stack(batch_class_labels)
+    class_labels = ops.stack(batch_class_labels).astype('int32')
     return (bbox_offset, bbox_mask, class_labels)
 
 d2l.DATA_HUB['banana-detection'] = (d2l.DATA_URL + 'banana-detection.zip',
@@ -2745,6 +2701,70 @@ def load_data_bananas(batch_size):
     val_iter = val_iter.batch(batch_size=batch_size, drop_remainder=True)
     return train_iter, val_iter
 
+
+def offset_inverse(anchors, offset_preds):
+    """根据带有预测偏移量的锚框来预测边界框"""
+    anc = d2l.box_corner_to_center(anchors)
+    pred_bbox_xy = (offset_preds[:, :2] * anc[:, 2:] / 10) + anc[:, :2]
+    pred_bbox_wh = ops.exp(offset_preds[:, 2:] / 5) * anc[:, 2:]
+    pred_bbox = ops.concat((pred_bbox_xy, pred_bbox_wh), axis=1)
+    predicted_bbox = d2l.box_center_to_corner(pred_bbox)
+    return predicted_bbox
+
+
+def nms(boxes, scores, iou_threshold):
+    """对预测边界框的置信度进行排序"""
+    B = ops.argsort(scores, axis=-1, descending=True)
+    keep = []  # 保留预测边界框的指标
+    while B.numel() > 0:
+        i = B[0]
+        keep.append(i.asnumpy())
+        if B.numel() == 1: break
+        iou = box_iou(boxes[i].reshape(-1, 4),
+                      boxes[:, :][B[1:]].reshape(-1, 4)).reshape(-1)
+        inds = ops.nonzero(iou <= iou_threshold).reshape(-1)
+        B = B[inds + 1]
+    return mindspore.Tensor(keep)
+
+
+def multibox_detection(cls_probs, offset_preds, anchors, nms_threshold=0.5,
+                       pos_threshold=0.009999999):
+    """使用非极大值抑制来预测边界框"""
+    batch_size = cls_probs.shape[0]
+    anchors = anchors.squeeze(0)
+    num_classes, num_anchors = cls_probs.shape[1], cls_probs.shape[2]
+    out = []
+    for i in range(batch_size):
+        cls_prob, offset_pred = cls_probs[i], offset_preds[i].reshape(-1, 4)
+        conf, class_id = ops.max(cls_prob[1:], 0)
+        predicted_bb = offset_inverse(anchors, offset_pred)
+        keep = nms(predicted_bb, conf, nms_threshold)
+        # 找到所有的non_keep索引，并将类设置为背景
+        all_idx = ops.arange(num_anchors, dtype=mindspore.int64)
+        combined = ops.concat((keep, all_idx))
+        unique = ops.unique(combined)
+        uniques, _ = unique[0], unique[1]
+        # 统计未重复的，mindspore的unique无法统计同一个元素出现次数
+        counts = mnp.bincount(combined)
+        non_keep = mindspore.Tensor([int(uniques[i]) for i in range(len(counts))
+                                     if (counts[i] == 1)])
+        all_id_sorted = ops.concat((keep, non_keep))
+        class_id[non_keep] = -1
+        class_id = class_id[all_id_sorted]
+        conf, predicted_bb = conf[all_id_sorted], predicted_bb[all_id_sorted]
+        # pos_threshold是一个用于非背景预测的阈值
+        below_min_idx = (conf < pos_threshold)
+        class_id = mindspore.Tensor.float(class_id)
+        class_id[below_min_idx] = -1
+        for j in range(len(conf)):
+            if below_min_idx[j] == True:
+                conf[j] = 1 - conf[j]
+
+        pred_info = ops.concat((class_id.unsqueeze(1),
+                                conf.unsqueeze(1).astype('float32'),
+                                predicted_bb), axis=1)
+        out.append(pred_info)
+    return ops.stack(out)
 
 d2l.DATA_HUB['voc2012'] = (d2l.DATA_URL + 'VOCtrainval_11-May-2012.tar',
                            '4e443f8a2eca6b1dac8a6c57641b67dd40621a49')
@@ -3016,6 +3036,7 @@ exp = ops.exp
 square = ops.square
 sqrt = ops.sqrt
 sign = ops.sign
+softmax = ops.softmax
 meshgrid = ops.meshgrid
 linspace = ops.linspace
 zeros_like = ops.zeros_like

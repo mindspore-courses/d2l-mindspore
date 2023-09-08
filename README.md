@@ -1,6 +1,6 @@
 # d2l-mindspore
 
-This is a unofficial implementation of ["Dive Into Deep Learning"](https://d2l.ai/) for MindSpore users to get start of deep learning easily. The codes are jupyter notebook on nvidia GPU based on MindSpore 1.5.
+This is a unofficial implementation of ["Dive Into Deep Learning"](https://d2l.ai/) for MindSpore users to get start of deep learning easily. The code is developed as a Jupyter notebook built upon MindSpore 2.0 or above, ensuring compatibility with all hardware platforms, including Ascend, GPU, and CPU.
 
 ## How to use
 
